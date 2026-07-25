@@ -1,9 +1,10 @@
 """Локальный веб-интерфейс парсера.
 
-Однофайловый сервер на stdlib (`http.server`): отдаёт страницу `web/index.html`
-и JSON API. Поиск — долгая операция (карточка товара грузится отдельно), поэтому
-он оформлен как фоновая задача: POST /api/search запускает поток и возвращает
-id, фронтенд опрашивает GET /api/search/<id> и дорисовывает найденное на лету.
+Сервер на stdlib (`http.server`): отдаёт собранный Vite-фронтенд из
+`frontend/dist` (или старую страницу `web/index.html`, пока сборки нет) и JSON
+API. Поиск — долгая операция (карточка товара грузится отдельно), поэтому он
+оформлен как фоновая задача: POST /api/search запускает поток и возвращает id,
+фронтенд опрашивает GET /api/search/<id> и дорисовывает найденное на лету.
 
 Итоги (`data/picks.json`) — отобранные пользователем позиции; хранятся на диске
 и переживают перезапуск.
@@ -12,6 +13,7 @@ id, фронтенд опрашивает GET /api/search/<id> и дорисов
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import tempfile
 import threading
@@ -22,7 +24,7 @@ from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from .catalog import Catalog
 from .client import Cancelled, ChallengeRequired, PoizonClient, PoizonError
@@ -33,6 +35,7 @@ from .sizes import parse_size_query
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = ROOT / "web"
+FRONTEND_DIST = ROOT / "frontend" / "dist"
 #: Личные избранные каждого пользователя: data/picks/<uid>.json.
 PICKS_DIR = ROOT / "data" / "picks"
 CACHE_DIR = Path(tempfile.gettempdir()) / "poizon-parser-cache"
@@ -60,6 +63,12 @@ JOB_RETENTION = 20
 #: Разумные границы длины стопы, см — вне них ввод считается ошибкой.
 FOOT_MIN_CM = 15.0
 FOOT_MAX_CM = 40.0
+#: Верхняя граница JSON-тела запроса. В том числе покрывает объёмный отчёт.
+MAX_JSON_BODY = 2 * 1024 * 1024
+
+
+class RequestBodyTooLarge(ValueError):
+    """JSON-тело запроса превышает разрешённый размер."""
 
 
 def validate_search(body: dict) -> Optional[str]:
@@ -599,12 +608,20 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        # Vite проксирует API, но не открывает Python index.html. Выдаём uid
+        # и здесь, чтобы личные итоги были изолированы также в dev-режиме.
+        self._send_uid_cookie_if_missing()
         self.end_headers()
         self.wfile.write(body)
 
     def _body(self) -> dict:
-        length = int(self.headers.get("Content-Length") or 0)
-        if not length:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return {}
+        if length > MAX_JSON_BODY:
+            raise RequestBodyTooLarge()
+        if length <= 0:
             return {}
         try:
             data = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -628,25 +645,78 @@ class Handler(BaseHTTPRequestHandler):
         """Идентификатор пользователя из cookie (или 'anon', если её нет)."""
         return self._cookies().get(UID_COOKIE, "anon")
 
-    def _static(self, name: str, content_type: str) -> None:
-        path = WEB_DIR / name
-        if not path.exists():
-            self._json({"error": f"нет файла {name}"}, 404)
+    def _send_uid_cookie_if_missing(self) -> None:
+        """Добавляет личный uid cookie, если браузер ещё не получил его."""
+        if UID_COOKIE in self._cookies():
             return
-        body = path.read_bytes()
+        new_uid = uuid.uuid4().hex
+        self.send_header(
+            "Set-Cookie",
+            (
+                f"{UID_COOKIE}={new_uid}; Path=/; HttpOnly; "
+                "Max-Age=31536000; SameSite=Lax"
+            ),
+        )
+
+    @staticmethod
+    def _content_type(path: Path) -> str:
+        """Возвращает стабильный MIME, не зависящий от реестра Windows."""
+        suffix = path.suffix.lower()
+        if suffix in (".js", ".mjs"):
+            return "text/javascript; charset=utf-8"
+        if suffix == ".css":
+            return "text/css; charset=utf-8"
+        if suffix == ".html":
+            return "text/html; charset=utf-8"
+        content_type = mimetypes.guess_type(path.name)[0]
+        return content_type or "application/octet-stream"
+
+    def _send_file(
+        self,
+        path: Path,
+        *,
+        cache_control: str,
+        set_uid_cookie: bool = False,
+    ) -> None:
+        if not path.is_file():
+            self._json({"error": "статический файл не найден"}, 404)
+            return
+        try:
+            body = path.read_bytes()
+        except OSError:
+            self._json({"error": "не удалось прочитать статический файл"}, 500)
+            return
         self.send_response(200)
-        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Type", self._content_type(path))
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", cache_control)
+        self.send_header("X-Content-Type-Options", "nosniff")
         # При первом заходе выдаём анонимный id — так у каждого свои избранные.
-        if UID_COOKIE not in self._cookies():
-            new_uid = uuid.uuid4().hex
-            self.send_header(
-                "Set-Cookie",
-                f"{UID_COOKIE}={new_uid}; Path=/; Max-Age=31536000; SameSite=Lax",
-            )
+        if set_uid_cookie:
+            self._send_uid_cookie_if_missing()
         self.end_headers()
         self.wfile.write(body)
+
+    def _serve_index(self) -> None:
+        """Отдаёт Vite index или старый интерфейс, если сборки ещё нет."""
+        vite_index = FRONTEND_DIST / "index.html"
+        index = vite_index if vite_index.is_file() else WEB_DIR / "index.html"
+        self._send_file(index, cache_control="no-store", set_uid_cookie=True)
+
+    def _serve_asset(self, request_path: str) -> None:
+        """Отдаёт только файлы внутри Vite assets, не допуская traversal."""
+        asset_root = (FRONTEND_DIST / "assets").resolve()
+        relative = unquote(request_path[len("/assets/"):])
+        try:
+            target = (asset_root / relative).resolve()
+            target.relative_to(asset_root)
+        except (OSError, RuntimeError, ValueError):
+            self._json({"error": "недопустимый путь"}, 403)
+            return
+        self._send_file(
+            target,
+            cache_control="public, max-age=31536000, immutable",
+        )
 
     # ------------------------------------------------------------- routes
 
@@ -654,7 +724,9 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             if path in ("/", "/index.html"):
-                self._static("index.html", "text/html; charset=utf-8")
+                self._serve_index()
+            elif path.startswith("/assets/"):
+                self._serve_asset(path)
             elif path == "/api/health":
                 self._json({
                     "status": "ok",
@@ -685,8 +757,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def _serve_report(self, path: str) -> None:
         """Отдаёт сгенерированный отчёт из result/ (с защитой от выхода из папки)."""
-        from urllib.parse import unquote
-
         rel = unquote(path[len("/result/"):])
         target = (RESULT_DIR / rel).resolve()
         try:
@@ -777,6 +847,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "не найдено"}, 404)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
+        except RequestBodyTooLarge:
+            # Тело не читаем: соединение нельзя переиспользовать, иначе его
+            # байты стали бы началом следующего HTTP-запроса.
+            self.close_connection = True
+            self._json(
+                {
+                    "error": (
+                        "JSON-тело слишком большое "
+                        f"(максимум {MAX_JSON_BODY} байт)"
+                    )
+                },
+                413,
+            )
 
     def _make_report(self, body: dict) -> None:
         """Собирает HTML-отчёт по результатам задачи в папке result/."""

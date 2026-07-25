@@ -1,0 +1,274 @@
+import { AlertTriangle, Ruler, Search, Square } from 'lucide-react'
+import { useState, type FormEvent } from 'react'
+
+import type { Brand, ConversionResponse } from '../api'
+import { formatNumber } from '../lib/format'
+import type { StoredSearchForm } from '../lib/storage'
+import {
+  Button,
+  Checkbox,
+  Field,
+  FieldHint,
+  FieldLabel,
+  Panel,
+  Select,
+} from './ui'
+
+interface SearchFormProps {
+  active: boolean
+  brands: Brand[]
+  brandsLoading: boolean
+  conversion?: ConversionResponse
+  conversionLoading: boolean
+  error?: string
+  form: StoredSearchForm
+  onCancel: () => void
+  onChange: (next: StoredSearchForm) => void
+  onSubmit: () => void
+  starting: boolean
+}
+
+export function SearchForm({
+  active,
+  brands,
+  brandsLoading,
+  conversion,
+  conversionLoading,
+  error,
+  form,
+  onCancel,
+  onChange,
+  onSubmit,
+  starting,
+}: SearchFormProps) {
+  const [showGuide, setShowGuide] = useState(false)
+
+  function update<Key extends keyof StoredSearchForm>(
+    key: Key,
+    value: StoredSearchForm[Key],
+  ) {
+    onChange({ ...form, [key]: value })
+  }
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    onSubmit()
+  }
+
+  return (
+    <Panel tone="raised">
+      <form className="search-form ui-card__content" onSubmit={submit}>
+        <div className="search-form__primary">
+          <Field
+            label="Бренд"
+            list="brand-options"
+            required
+            autoComplete="off"
+            placeholder="Nike, adidas, New Balance…"
+            hint={
+              brandsLoading
+                ? 'Список подсказок загружается; бренд уже можно ввести вручную.'
+                : `Доступно подсказок: ${brands.length}`
+            }
+            value={form.brand}
+            onChange={(event) => update('brand', event.target.value)}
+          />
+          <datalist id="brand-options">
+            {brands.map((brand) => (
+              <option key={brand.id} value={brand.name} />
+            ))}
+          </datalist>
+
+          <Field
+            label="Длина стопы, см"
+            required
+            type="number"
+            min="15"
+            max="40"
+            step="0.1"
+            inputMode="decimal"
+            placeholder="26,5"
+            value={form.size}
+            hint={
+              <>
+                Чистый замер без запаса.{' '}
+                <button
+                  className="inline-link"
+                  type="button"
+                  aria-expanded={showGuide}
+                  onClick={() => setShowGuide((shown) => !shown)}
+                >
+                  Как измерить
+                </button>
+              </>
+            }
+            onChange={(event) => update('size', event.target.value)}
+          />
+
+          <div className="ui-field">
+            <FieldLabel htmlFor="gender">Размерная сетка</FieldLabel>
+            <Select
+              id="gender"
+              value={form.gender}
+              onChange={(event) =>
+                update(
+                  'gender',
+                  event.target.value as StoredSearchForm['gender'],
+                )
+              }
+            >
+              <option value="men">Мужская / унисекс</option>
+              <option value="women">Женская</option>
+            </Select>
+            <FieldHint>Уточняет US-размер в таблицах бренда.</FieldHint>
+          </div>
+
+          <div className="ui-field">
+            <FieldLabel htmlFor="depth">Глубина поиска</FieldLabel>
+            <Select
+              id="depth"
+              value={form.depth}
+              onChange={(event) => update('depth', event.target.value)}
+            >
+              <option value="40">Быстро · 40 моделей</option>
+              <option value="120">Глубже · 120 моделей</option>
+              <option value="0">Весь каталог</option>
+            </Select>
+            <FieldHint>Результаты появляются по мере проверки.</FieldHint>
+          </div>
+        </div>
+
+        {showGuide ? (
+          <div className="measure-guide">
+            <strong>Как измерить стопу</strong>
+            <ol>
+              <li>Встаньте пяткой к стене на лист бумаги.</li>
+              <li>
+                Отметьте самый дальний палец и измерьте расстояние от края
+                листа.
+              </li>
+              <li>Измерьте обе ноги вечером и используйте большее значение.</li>
+            </ol>
+            Запас уже заложен производителем — прибавлять его к замеру не нужно.
+          </div>
+        ) : null}
+
+        {conversion?.sizes || conversion?.compare.length ? (
+          <div className="size-preview" aria-live="polite">
+            <Ruler size={17} aria-hidden="true" />
+            {conversion.sizes ? (
+              <>
+                <span className="size-preview__main">
+                  Ваш размер в {conversion.sizes.brand}:
+                </span>
+                <span className="size-preview__value">
+                  EU {formatNumber(conversion.sizes.eu)}
+                </span>
+                <span>
+                  US {formatNumber(conversion.sizes.us)} · UK{' '}
+                  {formatNumber(conversion.sizes.uk)}
+                  {' · '}ярлык {formatNumber(conversion.sizes.cm)} см
+                  {!conversion.sizes.exact ? ' · приблизительно' : ''}
+                </span>
+              </>
+            ) : (
+              <span>
+                Для «{form.brand}» точной таблицы нет — используем общую сетку
+                при поиске.
+              </span>
+            )}
+            {conversion.compare.length > 1 ? (
+              <div className="size-preview__compare">
+                <span>Для сравнения:</span>
+                {conversion.compare.map((item) => (
+                  <span key={item.brand}>
+                    {item.brand} EU {formatNumber(item.eu)}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : conversionLoading ? (
+          <p className="ui-field__hint" aria-live="polite">
+            Сверяю таблицу размеров…
+          </p>
+        ) : null}
+
+        {form.depth === '0' ? (
+          <div className="notice">
+            <AlertTriangle size={17} aria-hidden="true" />
+            <span>
+              Весь каталог крупного бренда может занять десятки минут.
+              Ограничение цены ускоряет обработку; поиск можно остановить, а уже
+              найденные модели сохранятся.
+            </span>
+          </div>
+        ) : null}
+
+        {error ? (
+          <p className="ui-field__error" role="alert">
+            {error}
+          </p>
+        ) : null}
+
+        <div className="search-form__secondary">
+          <Field
+            label="Цена до, ₽"
+            optionalLabel="необязательно"
+            type="number"
+            min="0"
+            placeholder="Не важно"
+            value={form.maxPrice}
+            onChange={(event) => update('maxPrice', event.target.value)}
+          />
+
+          <div className="ui-field">
+            <FieldLabel htmlFor="pace">Темп запросов</FieldLabel>
+            <Select
+              id="pace"
+              value={form.pace}
+              onChange={(event) =>
+                update('pace', event.target.value as StoredSearchForm['pace'])
+              }
+            >
+              <option value="polite">Бережный</option>
+              <option value="normal">Обычный</option>
+              <option value="fast">Быстрый · риск лимита</option>
+            </Select>
+          </div>
+
+          <Checkbox
+            label="Добавить детскую обувь"
+            description="По умолчанию ищем только взрослые модели."
+            checked={form.kids}
+            onChange={(event) => update('kids', event.target.checked)}
+          />
+
+          <div className="search-form__actions">
+            <Button
+              type="submit"
+              size="lg"
+              loading={starting}
+              loadingLabel="Запускаю…"
+              disabled={active}
+            >
+              <Search size={17} aria-hidden="true" />
+              {active ? 'Ищу…' : 'Найти'}
+            </Button>
+            {active ? (
+              <Button
+                type="button"
+                size="lg"
+                variant="secondary"
+                onClick={onCancel}
+              >
+                <Square size={15} aria-hidden="true" />
+                Стоп
+              </Button>
+            ) : null}
+          </div>
+        </div>
+      </form>
+    </Panel>
+  )
+}
