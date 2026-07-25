@@ -1,0 +1,978 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>POIZON Парсер — обувь по вашему размеру</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600;700&display=swap" rel="stylesheet">
+<script>
+  // Тема применяется до первой отрисовки, чтобы не мигало.
+  (function(){try{
+    var t=localStorage.getItem('poizon-theme');
+    if(!t) t=window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';
+    document.documentElement.setAttribute('data-theme',t);
+  }catch(e){document.documentElement.setAttribute('data-theme','light');}})();
+</script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.9/dist/cdn.min.js"></script>
+<style>
+  :root, :root[data-theme="light"]{
+    --bg:#f7f8fa; --surface:#ffffff; --surface-2:#f3f4f6;
+    --text:#111827; --text-soft:#667085; --text-faint:#98a2b3;
+    --border:#e7e9ee; --border-strong:#d0d5dd;
+    --accent:#2563eb; --accent-hover:#1d4ed8; --accent-soft:#eff4ff; --accent-text:#1e40af;
+    --amber:#b45309; --amber-soft:#fef6e7;
+    --danger:#dc2626; --danger-soft:#fdecec;
+    --success:#059669; --success-soft:#e7f6ef;
+    --shadow-sm:0 1px 2px rgba(16,24,40,.05);
+    --shadow:0 1px 3px rgba(16,24,40,.09),0 1px 2px rgba(16,24,40,.05);
+    --shadow-lg:0 10px 28px rgba(16,24,40,.12);
+    --radius:12px; --radius-sm:8px; --radius-pill:999px;
+    --mono:ui-monospace,'SFMono-Regular','Cascadia Code',Menlo,monospace;
+    --sans:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
+    --disp:'Inter',system-ui,sans-serif;
+    /* алиасы под имена, которыми пользуются компоненты */
+    --paper:var(--bg); --paper-2:var(--surface-2); --card:var(--surface);
+    --ink:var(--text); --ink-soft:var(--text-soft); --line:var(--border);
+    --green:var(--accent); --green-soft:var(--accent-soft);
+    --ochre:var(--amber); --ochre-soft:var(--amber-soft); --brick:var(--danger);
+    color-scheme:light;
+  }
+  :root[data-theme="dark"]{
+    --bg:#0e1116; --surface:#171b22; --surface-2:#1e232c;
+    --text:#e6e8ec; --text-soft:#9aa4b2; --text-faint:#6b7480;
+    --border:#262c36; --border-strong:#38404c;
+    --accent:#4f8ef7; --accent-hover:#6ba3ff; --accent-soft:#182741; --accent-text:#9ec2ff;
+    --amber:#e0a838; --amber-soft:#332915;
+    --danger:#f26d6d; --danger-soft:#2e1a1a;
+    --success:#34d399; --success-soft:#13291f;
+    --shadow-sm:0 1px 2px rgba(0,0,0,.4);
+    --shadow:0 1px 3px rgba(0,0,0,.5);
+    --shadow-lg:0 12px 32px rgba(0,0,0,.6);
+    color-scheme:dark;
+  }
+  *{box-sizing:border-box;}
+  [x-cloak]{display:none !important;}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--text);
+    font-family:var(--sans);
+    font-size:15px;
+    line-height:1.55;
+    padding:0 0 80px;
+    -webkit-font-smoothing:antialiased;
+    transition:background .2s ease,color .2s ease;
+  }
+  .wrap{max-width:1120px;margin:0 auto;padding:0 24px;}
+
+  /* header */
+  header.site{
+    max-width:1120px;margin:0 auto;padding:26px 24px 18px;
+    display:flex;align-items:flex-start;gap:16px;
+  }
+  header.site .head-main{flex:1;min-width:0;}
+  .brand{display:flex;align-items:center;gap:10px;margin-bottom:14px;}
+  .brand .logo{
+    width:34px;height:34px;border-radius:9px;flex:0 0 auto;
+    background:linear-gradient(135deg,var(--accent),#7c3aed);
+    display:flex;align-items:center;justify-content:center;font-size:18px;
+  }
+  .brand .brand-name{font-weight:600;font-size:15px;letter-spacing:-.01em;}
+  .brand .brand-sub{color:var(--text-faint);font-size:12.5px;}
+  h1{font-weight:700;font-size:clamp(26px,4vw,36px);letter-spacing:-.025em;margin:0 0 6px;line-height:1.15;}
+  h1 span{color:var(--accent);}
+  .sub{font-size:15px;color:var(--text-soft);max-width:66ch;margin:0;}
+  .theme-toggle{
+    flex:0 0 auto;width:38px;height:38px;border-radius:var(--radius-sm);
+    border:1px solid var(--border);background:var(--surface);color:var(--text-soft);
+    cursor:pointer;font-size:17px;display:flex;align-items:center;justify-content:center;
+    transition:all .15s ease;
+  }
+  .theme-toggle:hover{border-color:var(--border-strong);color:var(--text);}
+
+  /* tabs */
+  .tabs{display:flex;gap:4px;margin:22px 0 18px;border-bottom:1px solid var(--border);}
+  .tab{
+    font-weight:500;font-size:14.5px;padding:9px 14px 11px;
+    background:none;border:none;cursor:pointer;color:var(--text-soft);
+    border-bottom:2px solid transparent;margin-bottom:-1px;display:flex;gap:8px;align-items:center;
+    transition:color .15s ease;
+  }
+  .tab:hover{color:var(--text);}
+  .tab.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:600;}
+  .badge{
+    font-size:11.5px;font-weight:600;background:var(--accent);color:#fff;
+    border-radius:var(--radius-pill);padding:1px 8px;min-width:20px;text-align:center;
+  }
+  .badge.zero{background:var(--surface-2);color:var(--text-faint);}
+
+  /* form */
+  .panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:22px;box-shadow:var(--shadow-sm);}
+  .form-grid{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:14px;}
+  @media(max-width:820px){.form-grid{grid-template-columns:1fr 1fr;}}
+  .field label{
+    display:block;font-size:12.5px;font-weight:500;
+    color:var(--text-soft);margin-bottom:6px;
+  }
+  .field input,.field select{
+    width:100%;padding:9px 12px;font-family:var(--sans);font-size:14.5px;
+    border:1px solid var(--border);border-radius:var(--radius-sm);
+    background:var(--surface);color:var(--text);outline:none;transition:border-color .15s,box-shadow .15s;
+  }
+  .field input:focus,.field select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);}
+  .field input::placeholder{color:var(--text-faint);}
+  .field .hint{font-size:12px;color:var(--text-faint);margin-top:5px;}
+  .linklike{
+    background:none;border:none;padding:0;color:var(--accent);cursor:pointer;
+    font-family:var(--sans);font-size:12px;text-decoration:underline;
+  }
+  .howto{
+    background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);
+    padding:12px 16px;margin-top:14px;font-size:13.5px;color:var(--text-soft);
+  }
+  .howto b{color:var(--text);}
+  .howto ol{margin:6px 0 8px;padding-left:20px;}
+  .depth-note{
+    background:var(--amber-soft);border:1px solid transparent;border-left:3px solid var(--amber);
+    border-radius:var(--radius-sm);padding:10px 14px;margin-top:14px;font-size:13px;color:var(--text-soft);
+  }
+  .calc{
+    background:var(--accent-soft);border:1px solid transparent;border-radius:var(--radius-sm);
+    padding:13px 16px;margin-top:14px;font-size:14px;
+  }
+  .calc-main{color:var(--text);}
+  .calc-size{font-weight:700;color:var(--accent);font-size:16px;margin:0 4px;}
+  .calc-alt{color:var(--text-soft);font-size:13px;}
+  .calc-approx{color:var(--danger);font-weight:600;cursor:help;}
+  .calc-compare{margin-top:8px;font-size:12.5px;color:var(--text-soft);display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
+  .calc-chip{font-size:11.5px;font-weight:500;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-pill);padding:2px 10px;}
+  .calc-none{color:var(--text-soft);font-size:13px;}
+  .form-row2{display:flex;gap:14px;align-items:flex-end;margin-top:16px;flex-wrap:wrap;}
+  .check{display:flex;align-items:center;gap:8px;font-size:14px;color:var(--text-soft);padding-bottom:9px;}
+  .check input,.filters input[type=checkbox],.embed-check input{accent-color:var(--accent);}
+  .btn{
+    font-weight:600;font-size:14.5px;padding:9px 20px;border-radius:var(--radius-sm);
+    background:var(--accent);color:#fff;border:1px solid var(--accent);cursor:pointer;
+    transition:background .15s,border-color .15s,filter .15s;
+  }
+  .btn:hover{background:var(--accent-hover);border-color:var(--accent-hover);}
+  .btn:disabled{background:var(--surface-2);border-color:var(--border);color:var(--text-faint);cursor:default;}
+  .btn.ghost{background:var(--surface);border:1px solid var(--border);color:var(--text);}
+  .btn.ghost:hover{background:var(--surface-2);border-color:var(--border-strong);color:var(--text);}
+  .btn.small{font-size:13px;padding:6px 13px;}
+
+  /* progress */
+  .progress{margin-top:18px;}
+  .progress .head{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px;}
+  .status-line{font-size:13.5px;color:var(--text);}
+  .status-line b{color:var(--accent);font-weight:600;}
+  .bar{height:8px;background:var(--surface-2);border-radius:var(--radius-pill);margin:10px 0 6px;position:relative;overflow:hidden;}
+  .bar i{position:absolute;inset:0;width:0;background:var(--accent);border-radius:var(--radius-pill);transition:width .4s;}
+  .bar.pulse i{width:30%;animation:slide 1.2s linear infinite;}
+  @keyframes slide{from{transform:translateX(-100%);}to{transform:translateX(400%);}}
+  .log{
+    font-family:var(--mono);font-size:11.5px;color:var(--text-soft);
+    max-height:110px;overflow-y:auto;background:var(--surface-2);
+    border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 10px;margin-top:8px;white-space:pre-wrap;
+  }
+  .error-box{border:1px solid transparent;border-left:3px solid var(--danger);background:var(--danger-soft);border-radius:var(--radius-sm);padding:12px 16px;margin-top:14px;font-size:14px;color:var(--text);}
+  .captcha-box{border:1px solid var(--amber);background:var(--amber-soft);border-radius:var(--radius);padding:16px 18px;margin-top:14px;}
+  .captcha-title{font-weight:600;font-size:15.5px;color:var(--text);margin-bottom:6px;}
+  .captcha-box p{margin:0 0 8px;font-size:14px;color:var(--text-soft);}
+  .captcha-box ol{margin:0 0 12px;padding-left:20px;font-size:14px;color:var(--text-soft);}
+  .captcha-box a{color:var(--accent);font-weight:600;}
+  .captcha-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
+  .captcha-actions .waited{font-family:var(--mono);font-size:12px;color:var(--text-soft);}
+  .cooldown-box{
+    border:1px solid transparent;border-left:3px solid var(--accent);background:var(--accent-soft);
+    border-radius:var(--radius-sm);padding:11px 15px;margin-top:12px;font-size:14px;color:var(--text);
+  }
+  /* живой монитор состояния */
+  .monitor{
+    display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px;
+    padding:9px 13px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);font-size:13.5px;
+  }
+  .monitor .dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto;}
+  .monitor .dot.live{background:var(--success);animation:pulse-dot 1.2s ease-in-out infinite;}
+  .monitor .dot.slow{background:var(--amber);}
+  .monitor .dot.stall{background:var(--danger);}
+  @keyframes pulse-dot{0%,100%{opacity:1;}50%{opacity:.3;}}
+  .mon-now{color:var(--text);font-weight:500;}
+  .mon-meta{color:var(--text-faint);font-family:var(--mono);font-size:11.5px;}
+  .mon-pause{margin-left:auto;}
+  .stall-box{
+    border:1px solid transparent;border-left:3px solid var(--danger);background:var(--danger-soft);
+    border-radius:var(--radius-sm);padding:11px 15px;margin-top:10px;font-size:13.5px;color:var(--text);
+  }
+  .stats{font-family:var(--mono);font-size:11.5px;color:var(--text-faint);margin-top:8px;}
+  .stats b{color:var(--text-soft);}
+
+  /* фильтры результатов */
+  .filters{
+    display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+    background:var(--card);border:1px solid var(--line);padding:10px 14px;margin-bottom:14px;
+  }
+  .filters input[type=text],.filters input[type=number],.filters select{
+    padding:6px 10px;border:1px solid var(--line);background:#fff;
+    font-family:var(--sans);font-size:14px;
+  }
+  .filters input[type=text]{min-width:180px;}
+  .filters input[type=number]{width:110px;}
+  .filters label{font-size:13px;color:var(--ink-soft);display:flex;align-items:center;gap:6px;}
+  .filters .count{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--ink-soft);}
+
+  /* results */
+  .results-head{display:flex;justify-content:space-between;align-items:center;margin:26px 0 14px;flex-wrap:wrap;gap:10px;}
+  .results-head h2{font-family:var(--disp);font-size:22px;margin:0;}
+  .results-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+  .report-box{background:var(--green-soft);border:1px solid #C4D7C8;
+    padding:14px 18px;margin-bottom:14px;font-size:14px;}
+  .report-actions{display:flex;gap:10px;margin:10px 0 8px;flex-wrap:wrap;}
+  .report-path{font-size:12px;color:var(--ink-soft);}
+  .report-path code{font-family:var(--mono);background:var(--card);padding:1px 6px;border:1px solid var(--line);word-break:break-all;}
+  .report-hint{font-size:12.5px;color:var(--ink-soft);margin-top:6px;}
+  .embed-check{font-size:12.5px;color:var(--ink-soft);display:flex;align-items:center;gap:5px;cursor:pointer;}
+  .results-head select{padding:7px 10px;border:1px solid var(--line);background:#fff;font-family:var(--sans);}
+  .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(232px,1fr));gap:14px;}
+  .card{background:var(--card);border:1px solid var(--line);display:flex;flex-direction:column;}
+  .card .imgbox{aspect-ratio:1;background:#fff;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:center;overflow:hidden;}
+  .card img{max-width:100%;max-height:100%;object-fit:contain;}
+  .card .noimg{font-size:44px;opacity:.35;}
+  .card .body{padding:12px 14px 14px;display:flex;flex-direction:column;gap:8px;flex:1;}
+  .card .title{
+    font-size:13.5px;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;
+    -webkit-box-orient:vertical;overflow:hidden;min-height:2.7em;
+  }
+  .chips{display:flex;flex-wrap:wrap;gap:5px;}
+  .chip{
+    font-family:var(--mono);font-size:11px;padding:2px 8px;border:1px solid var(--line);
+    background:var(--paper-2);color:var(--ink-soft);white-space:nowrap;
+  }
+  .chip.size{background:var(--green-soft);color:var(--green);border-color:var(--green-soft);font-weight:600;}
+  .chip.fit{background:var(--ochre-soft);color:var(--ochre);border-color:var(--ochre-soft);}
+  .chip.approx{background:#F7E8E4;color:var(--brick);border-color:#EAD2CB;cursor:help;}
+  .price-row{display:flex;justify-content:space-between;align-items:baseline;margin-top:auto;}
+  .price{font-family:var(--mono);font-weight:600;font-size:18px;}
+  .delivery{font-size:11.5px;color:var(--ink-soft);}
+  .card .actions{display:flex;gap:8px;}
+  .card .actions a,.card .actions button{
+    flex:1;text-align:center;font-family:var(--disp);font-weight:600;font-size:13px;
+    padding:8px 4px;border:1px solid var(--line);background:none;color:var(--ink);
+    cursor:pointer;text-decoration:none;
+  }
+  .card .actions a:hover{border-color:var(--green);color:var(--green);}
+  .card .actions button:hover{border-color:var(--ochre);color:var(--ochre);}
+  .card .actions button.picked{background:var(--green);border-color:var(--green);color:#fff;cursor:default;}
+  .card .actions button.remove:hover{border-color:var(--brick);color:var(--brick);}
+
+  .meta-note{font-size:13px;color:var(--ink-soft);margin-top:12px;}
+  .empty{
+    text-align:center;color:var(--ink-soft);padding:56px 20px;border:1px dashed var(--line);
+    background:var(--card);font-size:15px;margin-top:20px;
+  }
+  .empty .big{font-size:40px;margin-bottom:10px;}
+
+  .picks-toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px;}
+  .picks-toolbar .spacer{flex:1;}
+  .qchip{
+    font-family:var(--mono);font-size:11px;background:var(--paper-2);
+    border:1px solid var(--line);padding:2px 8px;color:var(--ink-soft);
+  }
+</style>
+</head>
+<body>
+
+<header class="site">
+  <div class="eyebrow">thepoizon.ru · парсер обуви</div>
+  <h1>Обувь <span>по вашему размеру</span></h1>
+  <p class="sub">Выберите бренд, укажите размер как на официальном сайте производителя —
+  получите всё, что есть в наличии, с ценой за ваш размер. Отобранное сохраняется во вкладке «Итоги».</p>
+</header>
+
+<main class="wrap" x-data="app" x-cloak>
+
+  <!-- вкладки -->
+  <nav class="tabs">
+    <button class="tab" :class="{active: tab==='search'}" @click="tab='search'">Поиск</button>
+    <button class="tab" :class="{active: tab==='picks'}" @click="tab='picks'">
+      Итоги
+      <span class="badge" :class="{zero: !picks.length}" x-text="picks.length"></span>
+    </button>
+  </nav>
+
+  <!-- ==================== ПОИСК ==================== -->
+  <section x-show="tab==='search'">
+    <form class="panel" @submit.prevent="start">
+      <div class="form-grid">
+        <div class="field">
+          <label>Бренд</label>
+          <input list="brands-list" x-model="form.brand" required
+                 :placeholder="brandsLoading ? 'загружаю бренды…' : 'nike, adidas, new balance…'">
+          <datalist id="brands-list">
+            <template x-for="b in brands" :key="b.id">
+              <option :value="b.name"></option>
+            </template>
+          </datalist>
+        </div>
+        <div class="field">
+          <label>Длина стопы, см</label>
+          <input x-model="form.size" required placeholder="26,5" inputmode="decimal"
+                 type="number" step="0.1" min="15" max="40">
+          <div class="hint">
+            Замерьте стопу — это самый точный вход.
+            <button type="button" class="linklike" @click="howto = !howto">как мерить</button>
+          </div>
+        </div>
+        <div class="field">
+          <label>Сетка</label>
+          <select x-model="form.gender">
+            <option value="men">Мужская / унисекс</option>
+            <option value="women">Женская</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Глубина</label>
+          <select x-model="form.depth">
+            <option value="40">Быстро — 40 моделей</option>
+            <option value="120">Глубже — 120 моделей</option>
+            <option value="0">Весь каталог (долго)</option>
+          </select>
+        </div>
+      </div>
+      <!-- живой калькулятор: размер по стопе до запуска поиска -->
+      <div class="calc" x-show="calc.sizes || calc.compare.length" x-cloak>
+        <template x-if="calc.sizes">
+          <div class="calc-main">
+            Ваш размер в <b x-text="calc.sizes.brand"></b>:
+            <span class="calc-size" x-text="'EU ' + fmt(calc.sizes.eu)"></span>
+            <span class="calc-alt">
+              · US <span x-text="fmt(calc.sizes.us)"></span>
+              · UK <span x-text="fmt(calc.sizes.uk)"></span>
+              · ярлык <span x-text="fmt(calc.sizes.cm)"></span> см
+            </span>
+            <span class="calc-approx" x-show="!calc.sizes.exact" title="ближайшая строка таблицы">≈</span>
+          </div>
+        </template>
+        <div class="calc-compare" x-show="calc.compare.length > 1">
+          У других брендов та же стопа —
+          <template x-for="c in calc.compare" :key="c.brand">
+            <span class="calc-chip"><span x-text="c.brand"></span> EU <span x-text="fmt(c.eu)"></span></span>
+          </template>
+        </div>
+        <div class="calc-none" x-show="!calc.sizes && form.brand && calc.tried"
+             x-text="'Для «' + form.brand + '» точной таблицы нет — размер подберём по общей сетке при поиске.'"></div>
+      </div>
+
+      <!-- как измерить стопу -->
+      <div class="howto" x-show="howto" x-cloak>
+        <b>Как измерить стопу</b>
+        <ol>
+          <li>Встаньте на лист бумаги, прижатый к стене, пяткой к стене.</li>
+          <li>Отметьте карандашом самый дальний палец (не всегда большой).</li>
+          <li>Измерьте от края листа до отметки — это длина стопы.</li>
+          <li>Мерьте вечером и обе ноги, берите большее значение.</li>
+        </ol>
+        Запас на носок и посадку уже заложен в таблицах производителей — прибавлять
+        ничего не нужно, вводите чистый замер.
+      </div>
+
+      <div class="depth-note" x-show="form.depth === '0'" x-cloak>
+        ⓘ «Весь каталог» у крупного бренда — это сотни карточек и может занять
+        десятки минут, особенно если сайт начнёт ограничивать частоту.
+        Прогресс виден, поиск можно остановить в любой момент, а найденное
+        сохранится. Задайте цену или уменьшите глубину, чтобы ускорить.
+      </div>
+
+      <div class="form-row2">
+        <div class="field" style="width:170px">
+          <label>Цена до, ₽</label>
+          <input type="number" x-model="form.maxPrice" min="0" placeholder="не важно">
+        </div>
+        <div class="field" style="width:190px">
+          <label>Темп</label>
+          <select x-model="form.pace">
+            <option value="polite">Бережно — не злить сайт</option>
+            <option value="normal">Обычный</option>
+            <option value="fast">Быстрее (риск лимита)</option>
+          </select>
+        </div>
+        <label class="check"><input type="checkbox" x-model="form.kids"> детская обувь тоже</label>
+        <div style="flex:1"></div>
+        <button class="btn" type="submit" :disabled="running || paused">
+          <span x-text="(running||paused) ? 'Ищу…' : 'Найти'"></span>
+        </button>
+        <button class="btn ghost" type="button" x-show="running || paused" @click="cancel">Стоп</button>
+      </div>
+
+      <!-- прогресс -->
+      <div class="progress" x-show="job">
+        <div class="head">
+          <div class="status-line" x-html="statusLine"></div>
+          <div class="status-line" x-show="job && job.found" >найдено: <b x-text="job?.found"></b></div>
+        </div>
+        <div class="bar" :class="{pulse: (running || paused) && job?.phase==='collect'}">
+          <i :style="`width:${percent}%`"></i>
+        </div>
+
+        <!-- живой монитор: что происходит прямо сейчас -->
+        <div class="monitor" x-show="running || paused">
+          <span class="dot" :class="heartClass"></span>
+          <span class="mon-now" x-text="job?.activity || 'работаю…'"></span>
+          <span class="mon-meta" x-show="job?.active_requests"
+                x-text="'· запросов в работе: ' + job.active_requests"></span>
+          <span class="mon-meta" x-text="'· активность ' + heartAgo"></span>
+          <button type="button" class="btn ghost small mon-pause"
+                  x-show="running && !paused" @click="pauseManual"
+                  :disabled="job?.pause_requested">
+            <span x-text="job?.pause_requested ? 'встаю на паузу…' : '⏸ Пауза / пройти проверку'"></span>
+          </button>
+        </div>
+
+        <!-- застой: прогресс не двигается, помогаем понять причину -->
+        <div class="stall-box" x-show="running && !paused && cooldownLeft === 0 && heartSeconds > 20">
+          ⚠ Уже <b x-text="heartSeconds"></b> c нет ответа от сайта. Обычно это значит:
+          сайт медленно отвечает, ограничил частоту или показал проверку, которую
+          автоопределение не поймало. Нажмите <b>«⏸ Пауза / пройти проверку»</b>,
+          откройте сайт, пройдите проверку — и продолжите. Или остановите поиск.
+        </div>
+
+        <!-- автоматическое ожидание после 429: человек не нужен -->
+        <div class="cooldown-box" x-show="cooldownLeft > 0 && !paused">
+          ⏳ Сайт попросил сбавить темп — жду <b x-text="cooldownLeft"></b> c и продолжу сам.
+          Останавливать ничего не нужно.
+        </div>
+
+        <!-- капча: пауза до прохождения пользователем -->
+        <div class="captcha-box" x-show="paused">
+          <div class="captcha-title" x-text="job?.captcha?.reason === 'manual'
+            ? '⏸ Пауза — пройдите проверку на сайте' : '🛡 Сайт просит пройти проверку'"></div>
+          <p x-show="job?.captcha?.reason !== 'manual'">Похоже, из-за частых запросов POIZON показал капчу или ограничил доступ
+            (<span x-text="job?.captcha?.reason"></span>). Поиск поставлен на паузу и ничего не потеряет.</p>
+          <p x-show="job?.captcha?.reason === 'manual'">Поиск на паузе. Откройте сайт, пройдите капчу вручную и вернитесь — ничего не потеряется.</p>
+          <ol>
+            <li>Откройте страницу сайта в новой вкладке и пройдите проверку.</li>
+            <li>Когда страница откроется нормально — вернитесь сюда и нажмите «Продолжить».</li>
+          </ol>
+          <div class="captcha-actions">
+            <a class="btn" :href="job?.captcha?.url" target="_blank" rel="noopener"
+               @click="openCaptcha($event)">Открыть проверку в новой вкладке ↗</a>
+            <button type="button" class="btn" @click="resume">Продолжить</button>
+            <button type="button" class="btn ghost" @click="cancel">Отменить поиск</button>
+            <span class="waited" x-text="'на паузе ' + pausedFor + ' c'"></span>
+          </div>
+        </div>
+
+        <div class="log" x-show="(running||paused) && logTail.length" x-text="logTail"></div>
+        <div class="stats" x-show="statsLine" x-html="statsLine"></div>
+        <div class="error-box" x-show="job?.status==='error'" x-text="job?.error"></div>
+      </div>
+    </form>
+
+    <!-- результаты -->
+    <div x-show="matches.length">
+      <div class="results-head">
+        <h2>Найдено: <span x-text="matches.length"></span></h2>
+        <div class="results-actions">
+          <button class="btn small" type="button" @click="makeReport" :disabled="reporting">
+            <span x-text="reporting ? 'Готовлю…' : '📄 HTML-отчёт'"></span>
+          </button>
+          <label class="embed-check" title="Вшить фото в файл — откроется без интернета, но файл тяжелее и готовится дольше">
+            <input type="checkbox" x-model="reportEmbed"> с фото офлайн
+          </label>
+          <button class="btn ghost small" type="button" @click="exportResults('csv')">CSV</button>
+          <button class="btn ghost small" type="button" @click="exportResults('json')">JSON</button>
+          <select x-model="sort">
+            <option value="priceAsc">Сначала дешевле</option>
+            <option value="priceDesc">Сначала дороже</option>
+            <option value="fastest">Сначала быстрая доставка</option>
+            <option value="order">По порядку каталога</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- готовый HTML-отчёт для пересылки -->
+      <div class="report-box" x-show="report" x-cloak>
+        <b>Отчёт готов</b> — один HTML-файл, откроется в любом браузере.
+        <div class="report-actions">
+          <a class="btn small" :href="report?.view" target="_blank" rel="noopener">Открыть отчёт ↗</a>
+          <a class="btn ghost small" :href="report?.view" :download="'poizon-otchet.html'">Скачать файл</a>
+        </div>
+        <div class="report-path">Сохранён в: <code x-text="report?.file"></code></div>
+        <div class="report-hint">Перешлите этот файл — получатель увидит все модели с фото, ценами и ссылками.</div>
+      </div>
+
+      <div class="filters">
+        <input type="text" x-model="filter.text" placeholder="фильтр по названию…">
+        <input type="number" x-model="filter.max" placeholder="до, ₽">
+        <label><input type="checkbox" x-model="filter.exactOnly"> только точный перевод размера</label>
+        <label><input type="checkbox" x-model="filter.fastOnly"> доставка до 10 дней</label>
+        <button class="btn ghost small" type="button" @click="resetFilters" x-show="filterActive">Сбросить</button>
+        <span class="count" x-text="`показано ${sorted.length} из ${matches.length}`"></span>
+      </div>
+
+      <div class="cards">
+        <template x-for="m in sorted" :key="m.spu_id + '-' + m.sku_id">
+          <article class="card">
+            <div class="imgbox">
+              <template x-if="m.image"><img :src="thumb(m.image)" loading="lazy" alt=""></template>
+              <template x-if="!m.image"><div class="noimg">👟</div></template>
+            </div>
+            <div class="body">
+              <div class="title" x-text="m.title"></div>
+              <div class="chips">
+                <span class="chip size" x-text="poizonLabel(m)"></span>
+                <span class="chip fit" x-show="fitHint(m.size_tip)" x-text="'посадка ' + fitHint(m.size_tip)" :title="m.size_tip"></span>
+                <span class="chip" x-show="m.converted_cm"
+                      title="Ярлык размера в сантиметрах по таблице бренда — по нему удобно сверяться с карточкой POIZON"
+                      x-text="'ярлык ' + String(m.converted_cm).replace('.', ',') + ' см'"></span>
+                <span class="chip approx" x-show="!m.exact_conversion" :title="m.conversion_note || 'перевод шкалы приблизительный — сверьте на странице товара'">≈ перевод</span>
+                <span class="chip" x-show="m.variant && m.variant.indexOf('Оригинальная') === -1" x-text="m.variant"></span>
+              </div>
+              <div class="price-row">
+                <div class="price" x-text="money(m)"></div>
+                <div class="delivery" x-text="m.delivery || ''"></div>
+              </div>
+              <div class="actions">
+                <a :href="m.url" target="_blank" rel="noopener">Открыть ↗</a>
+                <button type="button" :class="{picked: isPicked(m)}" @click="pick(m)"
+                        x-text="isPicked(m) ? '✓ В итогах' : '☆ В итоги'"></button>
+              </div>
+            </div>
+          </article>
+        </template>
+      </div>
+    </div>
+
+    <div class="empty" x-show="!matches.length && job && !running && job.status==='done'">
+      <div class="big">🤷</div>
+      Размер не нашёлся ни у одной модели из проверенных.<br>
+      Попробуйте увеличить глубину поиска или другой размер.
+    </div>
+    <div class="empty" x-show="!job">
+      <div class="big">👟</div>
+      Выберите бренд и размер — результаты появятся здесь по мере проверки карточек.
+    </div>
+  </section>
+
+  <!-- ==================== ИТОГИ ==================== -->
+  <section x-show="tab==='picks'">
+    <div class="picks-toolbar" x-show="picks.length">
+      <span class="status-line">Сохранено позиций: <b x-text="picks.length"></b></span>
+      <div class="spacer"></div>
+      <button class="btn ghost small" @click="exportCsv">Скачать CSV</button>
+      <button class="btn ghost small" @click="exportJson">Скачать JSON</button>
+      <button class="btn ghost small" @click="clearPicks">Очистить всё</button>
+    </div>
+
+    <div class="cards" x-show="picks.length">
+      <template x-for="p in picks" :key="p.id">
+        <article class="card">
+          <div class="imgbox">
+            <template x-if="p.match.image"><img :src="thumb(p.match.image)" loading="lazy" alt=""></template>
+            <template x-if="!p.match.image"><div class="noimg">👟</div></template>
+          </div>
+          <div class="body">
+            <div class="chips">
+              <span class="qchip" x-text="(p.query.brand||'') + ' · ' + (p.query.size||'') + ' ' + (p.query.scale||'')"></span>
+              <span class="qchip" x-text="p.saved_at"></span>
+            </div>
+            <div class="title" x-text="p.match.title"></div>
+            <div class="chips">
+              <span class="chip size" x-text="poizonLabel(p.match)"></span>
+            </div>
+            <div class="price-row">
+              <div class="price" x-text="money(p.match)"></div>
+              <div class="delivery" x-text="p.match.delivery || ''"></div>
+            </div>
+            <div class="actions">
+              <a :href="p.match.url" target="_blank" rel="noopener">Открыть ↗</a>
+              <button type="button" class="remove" @click="removePick(p.id)">✕ Убрать</button>
+            </div>
+          </div>
+        </article>
+      </template>
+    </div>
+
+    <div class="empty" x-show="!picks.length">
+      <div class="big">📋</div>
+      Пока пусто. Нажимайте «☆ В итоги» на карточках в поиске —
+      выборка сохранится и переживёт перезапуск.<br>
+      <span style="font-size:12.5px;opacity:.8">Итоги личные: у каждого, кто открывает сервис,
+      своя выборка.</span>
+    </div>
+  </section>
+
+</main>
+
+<script>
+document.addEventListener('alpine:init', () => {
+  Alpine.data('app', () => ({
+    tab: 'search',
+    brands: [],
+    brandsLoading: true,
+    howto: false,
+    // Размер задаётся только длиной стопы: она однозначна, в отличие от
+    // US/UK/EU, где одно число значит разное у разных брендов.
+    form: { brand: '', size: '', gender: 'men', depth: '40', maxPrice: '', pace: 'normal', kids: false },
+    job: null,
+    jobId: null,
+    timer: null,
+    sort: 'priceAsc',
+    filter: { text: '', max: '', exactOnly: false, fastOnly: false },
+    picks: [],
+    // Живой калькулятор размера по стопе.
+    calc: { sizes: null, compare: [], tried: false },
+    calcTimer: null,
+    // Готовый HTML-отчёт для пересылки.
+    report: null,
+    reporting: false,
+    reportEmbed: false,
+
+    async init() {
+      this.restoreForm();
+      this.loadPicks();
+      // Запоминаем форму между заходами и обновляем калькулятор при вводе.
+      this.$watch('form', () => { this.saveForm(); this.scheduleCalc(); });
+      this.scheduleCalc();
+      try {
+        const r = await fetch('/api/brands');
+        const d = await r.json();
+        this.brands = d.brands || [];
+      } catch (e) { /* бренды подгрузятся при повторном заходе */ }
+      this.brandsLoading = false;
+    },
+
+    // ---------------- калькулятор и запоминание формы ----------------
+    fmt(v) {
+      if (v == null) return '—';
+      return String(v % 1 === 0 ? v : Math.round(v * 100) / 100).replace('.', ',');
+    },
+    scheduleCalc() {
+      clearTimeout(this.calcTimer);
+      const foot = Number(String(this.form.size).replace(',', '.'));
+      if (!foot || foot < 15 || foot > 40) { this.calc = { sizes: null, compare: [], tried: false }; return; }
+      this.calcTimer = setTimeout(() => this.runCalc(foot), 250);
+    },
+    async runCalc(foot) {
+      try {
+        const p = new URLSearchParams({ foot: String(foot), gender: this.form.gender });
+        if (this.form.brand.trim()) p.set('brand', this.form.brand.trim());
+        const r = await fetch('/api/convert?' + p.toString());
+        const d = await r.json();
+        this.calc = { sizes: d.sizes || null, compare: d.compare || [], tried: true };
+      } catch (e) { /* калькулятор необязателен — молча пропускаем */ }
+    },
+    saveForm() {
+      try { localStorage.setItem('poizon-form', JSON.stringify(this.form)); } catch (e) {}
+    },
+    restoreForm() {
+      try {
+        const saved = JSON.parse(localStorage.getItem('poizon-form') || 'null');
+        if (saved && typeof saved === 'object') {
+          for (const k of Object.keys(this.form))
+            if (k in saved) this.form[k] = saved[k];
+        }
+      } catch (e) {}
+    },
+
+    // ---------------- поиск ----------------
+    now: Date.now(),
+    get running() { return this.job && this.job.status === 'running'; },
+    get paused() { return this.job && this.job.status === 'captcha'; },
+    get pausedFor() {
+      if (!this.job?.captcha?.since) return 0;
+      return Math.max(0, Math.round(this.now / 1000 - this.job.captcha.since));
+    },
+    get matches() { return this.job ? (this.job.matches || []) : []; },
+    days(m) {
+      const found = /(\d+)/.exec(m.delivery || '');
+      return found ? Number(found[1]) : 999;
+    },
+    get filterActive() {
+      const f = this.filter;
+      return !!(f.text || f.max || f.exactOnly || f.fastOnly);
+    },
+    resetFilters() { this.filter = { text: '', max: '', exactOnly: false, fastOnly: false }; },
+    get sorted() {
+      const f = this.filter;
+      let list = this.matches.filter(m => {
+        if (f.text && !(m.title || '').toLowerCase().includes(f.text.toLowerCase())) return false;
+        if (f.max && (m.price ?? 1e12) > Number(f.max)) return false;
+        if (f.exactOnly && !m.exact_conversion) return false;
+        if (f.fastOnly && this.days(m) > 10) return false;
+        return true;
+      });
+      if (this.sort === 'priceAsc') list.sort((a, b) => (a.price ?? 1e12) - (b.price ?? 1e12));
+      if (this.sort === 'priceDesc') list.sort((a, b) => (b.price ?? -1) - (a.price ?? -1));
+      if (this.sort === 'fastest') list.sort((a, b) => this.days(a) - this.days(b));
+      return list;
+    },
+    get cooldownLeft() {
+      const until = this.job?.cooldown_until || 0;
+      if (!until) return 0;
+      return Math.max(0, Math.ceil(until - this.now / 1000));
+    },
+    // ---- heartbeat: сколько секунд без активности (считает сервер) ----
+    get heartSeconds() { return Math.round(this.job?.idle_seconds || 0); },
+    get heartAgo() {
+      const s = this.heartSeconds;
+      return s < 2 ? 'только что' : s + ' c назад';
+    },
+    get heartClass() {
+      if (this.cooldownLeft > 0 || this.paused) return 'slow';
+      const s = this.heartSeconds;
+      if (s > 20) return 'stall';
+      if (s > 6) return 'slow';
+      return 'live';
+    },
+    get statsLine() {
+      const s = this.job?.stats || {};
+      // Показываем и когда всё пришло из кэша — тогда запросов ноль.
+      if (!s.requests && !s.cache_hits && !this.job?.prefiltered) return '';
+      const parts = [];
+      const brandNote = (this.matches.find(m => m.conversion_source === 'brand') || {}).conversion_note;
+      if (brandNote) parts.push(`перевод размера — ${brandNote}`);
+      parts.push(`запросов к сайту: <b>${s.requests || 0}</b>`);
+      if (s.cache_hits) parts.push(`из кэша: <b>${s.cache_hits}</b>`);
+      if (this.job?.prefiltered) parts.push(`отсеяно по цене: <b>${this.job.prefiltered}</b>`);
+      if (s.cooldowns) parts.push(`пережидал лимит: <b>${s.cooldowns}</b>`);
+      return parts.join(' · ');
+    },
+    get percent() {
+      if (!this.job || !this.job.total) return 0;
+      return Math.round(100 * this.job.checked / this.job.total);
+    },
+    get eta() {
+      const j = this.job;
+      if (!j || j.phase !== 'check' || !j.checked || !j.total) return '';
+      const spent = this.now / 1000 - j.started_at;
+      const left = Math.round((spent / j.checked) * (j.total - j.checked));
+      if (left <= 0 || !isFinite(left)) return '';
+      return left < 60 ? `${left} c` : `${Math.round(left / 60)} мин`;
+    },
+    get statusLine() {
+      const j = this.job;
+      if (!j) return '';
+      const brand = j.brand ? j.brand.name : '';
+      if (j.status === 'running' && j.phase === 'collect')
+        return `Собираю каталог <b>${brand}</b>… моделей обуви: <b>${j.collected}</b>`;
+      if (j.status === 'running') {
+        const base = `Проверяю карточки <b>${brand}</b>: <b>${j.checked}</b> / ${j.total}`;
+        // Во время паузы после 429 показываем это прямо в статусе, чтобы
+        // прогресс не выглядел зависшим.
+        if (this.cooldownLeft > 0)
+          return base + ` · <b>пауза ${this.cooldownLeft} c</b> (сайт просит сбавить темп)`;
+        const eta = this.eta;
+        return base + (eta ? ` · осталось ~${eta}` : '');
+      }
+      const secs = j.finished_at ? Math.round(j.finished_at - j.started_at) : 0;
+      if (j.status === 'done')
+        return `Готово: проверено <b>${j.checked}</b> из ${j.total}, найдено <b>${j.found}</b> · ${secs} c`;
+      if (j.status === 'cancelled')
+        return `Остановлено на ${j.checked} из ${j.total}, найдено ${j.found}`;
+      // Причина остановки — из stop_reason сервера.
+      return j.stop_reason ? ('Ошибка: ' + j.stop_reason) : 'Ошибка';
+    },
+    get logTail() {
+      const log = this.job?.log || [];
+      return log.slice(-6).join('\n');
+    },
+
+    async start() {
+      if (this.running) return;
+      this.job = null;
+      this.report = null;
+      const body = {
+        brand: this.form.brand.trim(),
+        size: String(this.form.size).trim(),
+        scale: 'CM',
+        gender: this.form.gender,
+        depth: Number(this.form.depth) || 0,
+        maxPrice: this.form.maxPrice ? Number(this.form.maxPrice) : null,
+        pace: this.form.pace,
+        kids: this.form.kids,
+      };
+      const r = await fetch('/api/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const d = await r.json();
+      if (d.error) { this.job = { status: 'error', error: d.error, log: [] }; return; }
+      this.jobId = d.id;
+      this.poll();
+      clearInterval(this.timer);
+      this.timer = setInterval(() => this.poll(), 1000);
+    },
+
+    async poll() {
+      this.now = Date.now();
+      if (!this.jobId) return;
+      try {
+        const r = await fetch('/api/search/' + this.jobId);
+        const d = await r.json();
+        // Снимок задачи всегда имеет status (в т.ч. при status==='error' с полем
+        // error-данных). Ответ без status — это API-ошибка (задача не найдена).
+        if (d && d.status) {
+          this.job = d;
+          const active = d.status === 'running' || d.status === 'captcha';
+          if (!active) clearInterval(this.timer);
+        } else {
+          clearInterval(this.timer);  // задачи нет — прекращаем опрос
+        }
+      } catch (e) { /* сервер занят — попробуем на следующем тике */ }
+    },
+
+    async cancel() {
+      if (this.jobId) await fetch('/api/search/' + this.jobId + '/cancel', { method: 'POST' });
+    },
+
+    async resume() {
+      if (this.jobId) await fetch('/api/search/' + this.jobId + '/continue', { method: 'POST' });
+      this.poll();
+    },
+
+    async pauseManual() {
+      if (this.jobId) await fetch('/api/search/' + this.jobId + '/pause', { method: 'POST' });
+      this.poll();
+    },
+    openCaptcha(e) {
+      // Гарантированно открываем проверку в новой вкладке.
+      const url = this.job?.captcha?.url;
+      if (url) { if (e) e.preventDefault(); window.open(url, '_blank', 'noopener'); }
+    },
+
+    // ---------------- итоги ----------------
+    async loadPicks() {
+      try {
+        const r = await fetch('/api/picks');
+        const d = await r.json();
+        this.picks = d.items || [];
+      } catch (e) {}
+    },
+    pickKey(m, q) {
+      return `${m.spu_id}|${m.sku_id}|${q?.scale ?? m.requested_scale}|${q?.size ?? m.requested_size}`;
+    },
+    isPicked(m) {
+      const key = this.pickKey(m);
+      return this.picks.some(p => this.pickKey(p.match, p.query) === key);
+    },
+    async pick(m) {
+      if (this.isPicked(m)) return;
+      const query = {
+        brand: m.brand || (this.job?.brand?.name ?? this.form.brand),
+        size: m.requested_size,
+        scale: m.requested_scale,
+      };
+      const r = await fetch('/api/picks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ match: m, query }),
+      });
+      const d = await r.json();
+      if (d.item && d.created) this.picks.unshift(d.item);
+    },
+    async removePick(id) {
+      await fetch('/api/picks/' + id, { method: 'DELETE' });
+      this.picks = this.picks.filter(p => p.id !== id);
+    },
+    async clearPicks() {
+      if (!confirm('Удалить все сохранённые позиции?')) return;
+      await fetch('/api/picks', { method: 'DELETE' });
+      this.picks = [];
+    },
+    exportJson() {
+      this.download('poizon-picks.json',
+        JSON.stringify(this.picks, null, 2), 'application/json');
+    },
+    exportCsv() {
+      const head = ['Модель','Бренд','Запрос','Размер на POIZON','Цена, ₽','Доставка','Ссылка','Сохранено'];
+      const rows = this.picks.map(p => [
+        p.match.title, p.match.brand,
+        `${p.query.size ?? ''} ${p.query.scale ?? ''}`.trim(),
+        this.poizonLabel(p.match),
+        p.match.price ?? '', p.match.delivery ?? '',
+        p.match.url, p.saved_at,
+      ]);
+      const esc = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+      const csv = '﻿' + [head, ...rows].map(r => r.map(esc).join(';')).join('\r\n');
+      this.download('poizon-picks.csv', csv, 'text/csv;charset=utf-8');
+    },
+    download(name, content, type) {
+      const url = URL.createObjectURL(new Blob([content], { type }));
+      const a = Object.assign(document.createElement('a'), { href: url, download: name });
+      a.click();
+      URL.revokeObjectURL(url);
+    },
+    async makeReport() {
+      if (!this.matches.length || this.reporting) return;
+      this.reporting = true;
+      try {
+        const r = await fetch('/api/report', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jobId: this.jobId,
+            // Отдаём и сами результаты (в текущей сортировке) — на случай, если
+            // задача уже вычищена из памяти сервера.
+            matches: this.sorted,
+            brand: this.job?.brand?.name || this.form.brand,
+            size: this.form.size,
+            gender: this.form.gender,
+            embed: this.reportEmbed,
+          }),
+        });
+        const d = await r.json();
+        if (d.error) { alert('Не удалось собрать отчёт: ' + d.error); }
+        else { this.report = d; }
+      } catch (e) {
+        alert('Не удалось собрать отчёт.');
+      } finally {
+        this.reporting = false;
+      }
+    },
+    exportResults(kind) {
+      const rows = this.sorted;
+      if (!rows.length) return;
+      const brand = (this.job?.brand?.name || this.form.brand || 'poizon').toLowerCase().replace(/\s+/g, '-');
+      if (kind === 'json') {
+        this.download(`poizon-${brand}.json`, JSON.stringify(rows, null, 2), 'application/json');
+        return;
+      }
+      const head = ['Модель','Размер на POIZON','EU','Цена, ₽','Доставка','Ссылка'];
+      const data = rows.map(m => [
+        m.title, this.poizonLabel(m), m.converted_eu ?? '',
+        m.price ?? '', m.delivery ?? '', m.url,
+      ]);
+      const esc = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+      const csv = '﻿' + [head, ...data].map(r => r.map(esc).join(';')).join('\r\n');
+      this.download(`poizon-${brand}.csv`, csv, 'text/csv;charset=utf-8');
+    },
+
+    // ---------------- утилиты ----------------
+    money(m) {
+      if (m.price_text) return m.price_text;
+      if (m.price == null) return '—';
+      return new Intl.NumberFormat('ru-RU').format(m.price) + ' ₽';
+    },
+    thumb(url) {
+      if (!url || url.includes('x-oss-process') || url.endsWith('.svg')) return url;
+      return url + (url.includes('?') ? '&' : '?') + 'x-oss-process=image/resize,s_360/format,webp';
+    },
+    poizonLabel(m) {
+      const s = m.sizes || {};
+      const parts = Object.entries(s).map(([k, v]) => `${k} ${v}`);
+      return parts.join(' / ') || (m.size ? `${m.size} ${m.matched_scale}` : '');
+    },
+    fitHint(tip) {
+      if (!tip) return '';
+      const found = /([+-]\s*\d+(?:[.,]\d+)?)/.exec(tip);
+      return found ? found[1].replace(/\s/g, '') : '';
+    },
+  }));
+});
+</script>
+</body>
+</html>
