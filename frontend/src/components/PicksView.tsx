@@ -1,4 +1,10 @@
 import { Bookmark, Download, LoaderCircle, Trash2 } from 'lucide-react'
+import {
+  AnimatePresence,
+  LayoutGroup,
+  motion,
+  useReducedMotion,
+} from 'motion/react'
 
 import type { Pick } from '../api'
 import { downloadText, rowsToCsv } from '../lib/download'
@@ -24,6 +30,7 @@ export function PicksView({
   picks,
   removingId,
 }: PicksViewProps) {
+  const reduceMotion = useReducedMotion()
   function exportJson() {
     downloadText(
       'poizon-picks.json',
@@ -113,17 +120,42 @@ export function PicksView({
         </Button>
       </div>
 
-      <div className="product-grid">
-        {picks.map((pick) => (
-          <ProductCard
-            key={pick.id}
-            pick={pick}
-            match={pick.match}
-            removing={removingId === pick.id}
-            onRemove={onRemove}
-          />
-        ))}
-      </div>
+      <LayoutGroup id="saved-products">
+        <div className="product-grid">
+          <AnimatePresence mode="popLayout">
+            {picks.map((pick, index) => (
+              <motion.div
+                key={pick.id}
+                className="product-card-slot"
+                layout="position"
+                initial={
+                  reduceMotion
+                    ? { opacity: 0 }
+                    : { opacity: 0, y: 8, scale: 0.99 }
+                }
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={
+                  reduceMotion
+                    ? { opacity: 0 }
+                    : { opacity: 0, x: 12, scale: 0.985 }
+                }
+                transition={{
+                  duration: reduceMotion ? 0.08 : 0.24,
+                  delay: reduceMotion || index >= 10 ? 0 : index * 0.025,
+                  ease: [0.22, 1, 0.36, 1],
+                }}
+              >
+                <ProductCard
+                  pick={pick}
+                  match={pick.match}
+                  removing={removingId === pick.id}
+                  onRemove={onRemove}
+                />
+              </motion.div>
+            ))}
+          </AnimatePresence>
+        </div>
+      </LayoutGroup>
     </section>
   )
 }

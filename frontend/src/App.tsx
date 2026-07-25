@@ -22,6 +22,7 @@ import {
 } from './api'
 import { AppShell, type AppView } from './components/AppShell'
 import { EmptyState } from './components/EmptyState'
+import { MotionView } from './components/MotionView'
 import { PicksView } from './components/PicksView'
 import { ResultsView } from './components/ResultsView'
 import { SearchForm } from './components/SearchForm'
@@ -32,7 +33,6 @@ import {
   saveSearchForm,
   type StoredSearchForm,
 } from './lib/storage'
-import './styles/app.css'
 
 const PICKS_QUERY_KEY = ['picks'] as const
 
@@ -238,90 +238,92 @@ export function App() {
       picksCount={picks.length}
       onViewChange={setActiveView}
     >
-      {activeView === 'search' ? (
-        <>
-          <SearchForm
-            active={searchActive}
-            brands={brandsQuery.data?.brands ?? []}
-            brandsLoading={brandsQuery.isPending}
-            conversion={conversionQuery.data}
-            conversionLoading={conversionQuery.isFetching}
-            error={
-              startMutation.error
-                ? errorMessage(startMutation.error)
-                : undefined
-            }
-            form={form}
-            onChange={setForm}
-            onSubmit={() => startMutation.mutate()}
-            onCancel={() => searchActionMutation.mutate('cancel')}
-            starting={startMutation.isPending}
-          />
-
-          {job ? (
-            <SearchStatus
-              job={job}
-              actionPending={searchActionMutation.isPending}
-              onPause={() => searchActionMutation.mutate('pause')}
-              onResume={() => searchActionMutation.mutate('resume')}
-              onCancel={() => searchActionMutation.mutate('cancel')}
-            />
-          ) : null}
-
-          {mutationError && !startMutation.error ? (
-            <p className="ui-field__error" role="alert">
-              {mutationError}
-            </p>
-          ) : null}
-
-          {job?.matches.length ? (
-            <ResultsView
-              brand={job.brand?.name || form.brand}
-              matches={job.matches}
-              picks={picks}
-              report={report}
-              reporting={reportMutation.isPending}
-              savingSpuId={savingSpuId}
-              onPick={(match) => addPickMutation.mutate(match)}
-              onCreateReport={(matches, embed) =>
-                reportMutation.mutate({ matches, embed })
+      <MotionView viewKey={activeView}>
+        {activeView === 'search' ? (
+          <>
+            <SearchForm
+              active={searchActive}
+              brands={brandsQuery.data?.brands ?? []}
+              brandsLoading={brandsQuery.isPending}
+              conversion={conversionQuery.data}
+              conversionLoading={conversionQuery.isFetching}
+              error={
+                startMutation.error
+                  ? errorMessage(startMutation.error)
+                  : undefined
               }
+              form={form}
+              onChange={setForm}
+              onSubmit={() => startMutation.mutate()}
+              onCancel={() => searchActionMutation.mutate('cancel')}
+              starting={startMutation.isPending}
             />
-          ) : job?.status === 'done' ? (
-            <div style={{ marginTop: '1rem' }}>
-              <EmptyState
-                icon={SearchX}
-                title="Подходящий размер не нашёлся"
-                description="Попробуйте увеличить глубину поиска, снять ограничение цены или проверить другой размер."
+
+            {job ? (
+              <SearchStatus
+                job={job}
+                actionPending={searchActionMutation.isPending}
+                onPause={() => searchActionMutation.mutate('pause')}
+                onResume={() => searchActionMutation.mutate('resume')}
+                onCancel={() => searchActionMutation.mutate('cancel')}
               />
-            </div>
-          ) : !job ? (
-            <div style={{ marginTop: '1rem' }}>
-              <EmptyState
-                icon={PackageSearch}
-                title="Результаты появятся здесь"
-                description="Выберите бренд и укажите длину стопы. Карточки будут добавляться в этот экран по мере проверки каталога."
+            ) : null}
+
+            {mutationError && !startMutation.error ? (
+              <p className="ui-field__error" role="alert">
+                {mutationError}
+              </p>
+            ) : null}
+
+            {job?.matches.length ? (
+              <ResultsView
+                brand={job.brand?.name || form.brand}
+                matches={job.matches}
+                picks={picks}
+                report={report}
+                reporting={reportMutation.isPending}
+                savingSpuId={savingSpuId}
+                onPick={(match) => addPickMutation.mutate(match)}
+                onCreateReport={(matches, embed) =>
+                  reportMutation.mutate({ matches, embed })
+                }
               />
-            </div>
-          ) : null}
-        </>
-      ) : (
-        <>
-          {mutationError ? (
-            <p className="ui-field__error" role="alert">
-              {mutationError}
-            </p>
-          ) : null}
-          <PicksView
-            picks={picks}
-            loading={picksQuery.isPending}
-            clearing={clearPicksMutation.isPending}
-            removingId={removingPickId}
-            onRemove={(id) => removePickMutation.mutate(id)}
-            onClear={() => clearPicksMutation.mutate()}
-          />
-        </>
-      )}
+            ) : job?.status === 'done' ? (
+              <div style={{ marginTop: '1rem' }}>
+                <EmptyState
+                  icon={SearchX}
+                  title="Подходящий размер не нашёлся"
+                  description="Попробуйте увеличить глубину поиска, снять ограничение цены или проверить другой размер."
+                />
+              </div>
+            ) : !job ? (
+              <div style={{ marginTop: '1rem' }}>
+                <EmptyState
+                  icon={PackageSearch}
+                  title="Результаты появятся здесь"
+                  description="Выберите бренд и укажите длину стопы. Карточки будут добавляться в этот экран по мере проверки каталога."
+                />
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <>
+            {mutationError ? (
+              <p className="ui-field__error" role="alert">
+                {mutationError}
+              </p>
+            ) : null}
+            <PicksView
+              picks={picks}
+              loading={picksQuery.isPending}
+              clearing={clearPicksMutation.isPending}
+              removingId={removingPickId}
+              onRemove={(id) => removePickMutation.mutate(id)}
+              onClear={() => clearPicksMutation.mutate()}
+            />
+          </>
+        )}
+      </MotionView>
     </AppShell>
   )
 }

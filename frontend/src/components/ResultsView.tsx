@@ -4,7 +4,14 @@ import {
   FileText,
   FilterX,
   SearchX,
+  X,
 } from 'lucide-react'
+import {
+  AnimatePresence,
+  LayoutGroup,
+  motion,
+  useReducedMotion,
+} from 'motion/react'
 import { useMemo, useState } from 'react'
 
 import type { Pick, ReportResponse, SearchMatch } from '../api'
@@ -46,6 +53,7 @@ export function ResultsView({
   reporting,
   savingSpuId,
 }: ResultsViewProps) {
+  const reduceMotion = useReducedMotion()
   const [sort, setSort] = useState<SortMode>('priceAsc')
   const [text, setText] = useState('')
   const [maxPrice, setMaxPrice] = useState('')
@@ -240,22 +248,130 @@ export function ResultsView({
           </Button>
         ) : null}
         <span className="filters-bar__count">
-          Показано {filtered.length} из {matches.length}
+          Показано{' '}
+          <motion.strong
+            key={filtered.length}
+            initial={reduceMotion ? false : { opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+          >
+            {filtered.length}
+          </motion.strong>{' '}
+          из {matches.length}
         </span>
       </div>
 
+      <AnimatePresence initial={false}>
+        {filtersActive ? (
+          <motion.div
+            className="active-filters"
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            aria-label="Активные фильтры"
+          >
+            <AnimatePresence mode="popLayout">
+              {text ? (
+                <motion.button
+                  key="text-filter"
+                  className="filter-chip"
+                  type="button"
+                  layout
+                  exit={{ opacity: 0, scale: 0.9 }}
+                  whileTap={{ scale: 0.97 }}
+                  onClick={() => setText('')}
+                  aria-label={`Убрать фильтр по названию: ${text}`}
+                >
+                  Название: «{text}»
+                  <X size={12} aria-hidden="true" />
+                </motion.button>
+              ) : null}
+              {maxPrice ? (
+                <motion.button
+                  key="price-filter"
+                  className="filter-chip"
+                  type="button"
+                  layout
+                  exit={{ opacity: 0, scale: 0.9 }}
+                  whileTap={{ scale: 0.97 }}
+                  onClick={() => setMaxPrice('')}
+                  aria-label={`Убрать ограничение цены до ${maxPrice} рублей`}
+                >
+                  До {maxPrice} ₽
+                  <X size={12} aria-hidden="true" />
+                </motion.button>
+              ) : null}
+              {exactOnly ? (
+                <motion.button
+                  key="exact-filter"
+                  className="filter-chip"
+                  type="button"
+                  layout
+                  exit={{ opacity: 0, scale: 0.9 }}
+                  whileTap={{ scale: 0.97 }}
+                  onClick={() => setExactOnly(false)}
+                  aria-label="Убрать фильтр точного перевода"
+                >
+                  Точный перевод
+                  <X size={12} aria-hidden="true" />
+                </motion.button>
+              ) : null}
+              {fastOnly ? (
+                <motion.button
+                  key="fast-filter"
+                  className="filter-chip"
+                  type="button"
+                  layout
+                  exit={{ opacity: 0, scale: 0.9 }}
+                  whileTap={{ scale: 0.97 }}
+                  onClick={() => setFastOnly(false)}
+                  aria-label="Убрать фильтр доставки до десяти дней"
+                >
+                  До 10 дней
+                  <X size={12} aria-hidden="true" />
+                </motion.button>
+              ) : null}
+            </AnimatePresence>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+
       {filtered.length > 0 ? (
-        <div className="product-grid">
-          {filtered.map((match) => (
-            <ProductCard
-              key={`${match.spu_id}-${match.sku_id}`}
-              match={match}
-              picked={pickedKeys.has(pickKey(match))}
-              saving={savingSpuId === match.spu_id}
-              onPick={onPick}
-            />
-          ))}
-        </div>
+        <LayoutGroup id="search-results">
+          <div className="product-grid">
+            <AnimatePresence initial={false} mode="popLayout">
+              {filtered.map((match, index) => (
+                <motion.div
+                  key={`${match.spu_id}-${match.sku_id}`}
+                  className="product-card-slot"
+                  layout="position"
+                  initial={
+                    reduceMotion
+                      ? { opacity: 0 }
+                      : { opacity: 0, y: 8, scale: 0.99 }
+                  }
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={
+                    reduceMotion
+                      ? { opacity: 0 }
+                      : { opacity: 0, y: 5, scale: 0.985 }
+                  }
+                  transition={{
+                    duration: reduceMotion ? 0.08 : 0.24,
+                    delay: reduceMotion || index >= 12 ? 0 : index * 0.025,
+                    ease: [0.22, 1, 0.36, 1],
+                  }}
+                >
+                  <ProductCard
+                    match={match}
+                    picked={pickedKeys.has(pickKey(match))}
+                    saving={savingSpuId === match.spu_id}
+                    onPick={onPick}
+                  />
+                </motion.div>
+              ))}
+            </AnimatePresence>
+          </div>
+        </LayoutGroup>
       ) : (
         <div style={{ marginTop: '0.9rem' }}>
           <EmptyState

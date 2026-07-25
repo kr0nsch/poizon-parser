@@ -7,11 +7,14 @@ import {
   ShieldAlert,
   Square,
 } from 'lucide-react'
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { useEffect, useMemo, useState } from 'react'
 
 import type { SearchSnapshot } from '../api'
 import { formatActivityAge, formatDuration } from '../lib/format'
 import { Badge, Button, Card, CardContent, Progress } from './ui'
+
+const MotionStatusCard = motion.create(Card)
 
 interface SearchStatusProps {
   actionPending: boolean
@@ -85,6 +88,7 @@ export function SearchStatus({
   onResume,
 }: SearchStatusProps) {
   const [now, setNow] = useState(() => Date.now())
+  const reduceMotion = useReducedMotion()
   const active = job.status === 'running' || job.status === 'captcha'
 
   useEffect(() => {
@@ -123,8 +127,15 @@ export function SearchStatus({
     : 0
 
   return (
-    <Card
+    <MotionStatusCard
       className="status-card"
+      layout
+      transition={{
+        layout: {
+          duration: reduceMotion ? 0.08 : 0.24,
+          ease: [0.22, 1, 0.36, 1],
+        },
+      }}
       tone={
         job.status === 'error'
           ? 'danger'
@@ -132,14 +143,28 @@ export function SearchStatus({
             ? 'warning'
             : 'system'
       }
-      aria-live="polite"
     >
       <CardContent>
         <div className="status-summary">
-          <div>
-            <p className="status-summary__title">{copy.title}</p>
-            <p className="status-summary__meta">{copy.meta}</p>
-          </div>
+          <AnimatePresence initial={false} mode="popLayout">
+            <motion.div
+              key={`${job.status}-${job.phase}-${copy.title}`}
+              initial={reduceMotion ? { opacity: 0 } : { opacity: 0, y: 5 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
+              layout
+            >
+              <p
+                className="status-summary__title"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                {copy.title}
+              </p>
+              <p className="status-summary__meta">{copy.meta}</p>
+            </motion.div>
+          </AnimatePresence>
           <Badge
             dot
             tone={
@@ -152,7 +177,14 @@ export function SearchStatus({
                     : 'positive'
             }
           >
-            {job.found} найдено
+            <motion.span
+              key={job.found}
+              initial={reduceMotion ? false : { y: -5, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+            >
+              {job.found}
+            </motion.span>{' '}
+            найдено
           </Badge>
         </div>
 
@@ -200,71 +232,107 @@ export function SearchStatus({
           </div>
         ) : null}
 
-        {stalled ? (
-          <div className="notice">
-            <AlertTriangle size={17} aria-hidden="true" />
-            <span>
-              Уже {Math.round(idleSeconds)} с нет ответа. Сайт может отвечать
-              медленно или показать незамеченную проверку. Поставьте поиск на
-              паузу, откройте сайт и продолжите после проверки.
-            </span>
-          </div>
-        ) : null}
-
-        {cooldownLeft > 0 && job.status !== 'captcha' ? (
-          <div className="notice">
-            <Activity size={17} aria-hidden="true" />
-            <span>
-              Сайт попросил снизить темп. Жду {cooldownLeft} с и продолжу
-              автоматически.
-            </span>
-          </div>
-        ) : null}
-
-        {job.status === 'captcha' ? (
-          <div className="captcha-panel">
-            <h3>
-              <ShieldAlert size={18} aria-hidden="true" />
-              {job.captcha?.reason === 'manual'
-                ? ' Ручная пауза для проверки'
-                : ' Сайт просит пройти проверку'}
-            </h3>
-            <p>
-              Откройте POIZON в новой вкладке, пройдите капчу и вернитесь сюда.
-              Задача продолжится с того же места.
-            </p>
-            <ol>
-              <li>Убедитесь, что страница сайта открывается нормально.</li>
-              <li>Нажмите «Продолжить» в этом окне.</li>
-            </ol>
-            <div className="ui-cluster">
-              {job.captcha?.url ? (
-                <a
-                  className="ui-button ui-button--secondary ui-button--sm"
-                  href={job.captcha.url}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Открыть проверку
-                  <ExternalLink size={14} aria-hidden="true" />
-                </a>
-              ) : null}
-              <Button size="sm" loading={actionPending} onClick={onResume}>
-                <Play size={14} aria-hidden="true" />
-                Продолжить
-              </Button>
-              <Button size="sm" variant="quiet" onClick={onCancel}>
-                <Square size={13} aria-hidden="true" />
-                Отменить
-              </Button>
-              <span className="ui-field__hint">
-                На паузе {formatDuration(captchaSeconds)}
+        <AnimatePresence initial={false}>
+          {stalled ? (
+            <motion.div
+              key="stall"
+              className="notice"
+              initial={{ opacity: 0, y: reduceMotion ? 0 : -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: reduceMotion ? 0 : -4 }}
+            >
+              <AlertTriangle size={17} aria-hidden="true" />
+              <span>
+                Уже {Math.round(idleSeconds)} с нет ответа. Сайт может отвечать
+                медленно или показать незамеченную проверку. Поставьте поиск на
+                паузу, откройте сайт и продолжите после проверки.
               </span>
-            </div>
-          </div>
-        ) : null}
+            </motion.div>
+          ) : null}
 
-        {active && logTail ? <pre className="status-log">{logTail}</pre> : null}
+          {cooldownLeft > 0 && job.status !== 'captcha' ? (
+            <motion.div
+              key="cooldown"
+              className="notice"
+              initial={{ opacity: 0, y: reduceMotion ? 0 : -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+            >
+              <Activity size={17} aria-hidden="true" />
+              <span>
+                Сайт попросил снизить темп. Жду {cooldownLeft} с и продолжу
+                автоматически.
+              </span>
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
+
+        <AnimatePresence initial={false}>
+          {job.status === 'captcha' ? (
+            <motion.div
+              className="captcha-panel"
+              initial={
+                reduceMotion
+                  ? { opacity: 0 }
+                  : { opacity: 0, y: 8, scale: 0.99 }
+              }
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: reduceMotion ? 0 : -5 }}
+            >
+              <h3>
+                <ShieldAlert size={18} aria-hidden="true" />
+                {job.captcha?.reason === 'manual'
+                  ? ' Ручная пауза для проверки'
+                  : ' Сайт просит пройти проверку'}
+              </h3>
+              <p>
+                Откройте POIZON в новой вкладке, пройдите капчу и вернитесь
+                сюда. Задача продолжится с того же места.
+              </p>
+              <ol>
+                <li>Убедитесь, что страница сайта открывается нормально.</li>
+                <li>Нажмите «Продолжить» в этом окне.</li>
+              </ol>
+              <div className="ui-cluster">
+                {job.captcha?.url ? (
+                  <a
+                    className="ui-button ui-button--secondary ui-button--sm"
+                    href={job.captcha.url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Открыть проверку
+                    <ExternalLink size={14} aria-hidden="true" />
+                  </a>
+                ) : null}
+                <Button size="sm" loading={actionPending} onClick={onResume}>
+                  <Play size={14} aria-hidden="true" />
+                  Продолжить
+                </Button>
+                <Button size="sm" variant="quiet" onClick={onCancel}>
+                  <Square size={13} aria-hidden="true" />
+                  Отменить
+                </Button>
+                <span className="ui-field__hint">
+                  На паузе {formatDuration(captchaSeconds)}
+                </span>
+              </div>
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
+
+        <AnimatePresence initial={false}>
+          {active && logTail ? (
+            <motion.pre
+              className="status-log"
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+            >
+              {logTail}
+            </motion.pre>
+          ) : null}
+        </AnimatePresence>
 
         {job.stats.requests ||
         job.stats.cache_hits ||
@@ -284,6 +352,6 @@ export function SearchStatus({
           </div>
         ) : null}
       </CardContent>
-    </Card>
+    </MotionStatusCard>
   )
 }

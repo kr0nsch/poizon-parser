@@ -1,4 +1,5 @@
 import { AlertTriangle, Ruler, Search, Square } from 'lucide-react'
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { useState, type FormEvent } from 'react'
 
 import type { Brand, ConversionResponse } from '../api'
@@ -42,6 +43,17 @@ export function SearchForm({
   starting,
 }: SearchFormProps) {
   const [showGuide, setShowGuide] = useState(false)
+  const reduceMotion = useReducedMotion()
+  const revealInitial = reduceMotion
+    ? { opacity: 0 }
+    : { opacity: 0, height: 0, y: -8 }
+  const revealExit = reduceMotion
+    ? { opacity: 0 }
+    : { opacity: 0, height: 0, y: -5 }
+  const revealTransition = {
+    duration: reduceMotion ? 0.1 : 0.24,
+    ease: [0.22, 1, 0.36, 1] as const,
+  }
 
   function update<Key extends keyof StoredSearchForm>(
     key: Key,
@@ -96,6 +108,7 @@ export function SearchForm({
                   className="inline-link"
                   type="button"
                   aria-expanded={showGuide}
+                  aria-controls="measure-guide"
                   onClick={() => setShowGuide((shown) => !shown)}
                 >
                   Как измерить
@@ -138,78 +151,135 @@ export function SearchForm({
           </div>
         </div>
 
-        {showGuide ? (
-          <div className="measure-guide">
-            <strong>Как измерить стопу</strong>
-            <ol>
-              <li>Встаньте пяткой к стене на лист бумаги.</li>
-              <li>
-                Отметьте самый дальний палец и измерьте расстояние от края
-                листа.
-              </li>
-              <li>Измерьте обе ноги вечером и используйте большее значение.</li>
-            </ol>
-            Запас уже заложен производителем — прибавлять его к замеру не нужно.
-          </div>
-        ) : null}
+        <AnimatePresence initial={false}>
+          {showGuide ? (
+            <motion.div
+              key="measure-guide"
+              id="measure-guide"
+              className="measure-guide motion-collapse"
+              initial={revealInitial}
+              animate={{ opacity: 1, height: 'auto', y: 0 }}
+              exit={revealExit}
+              transition={revealTransition}
+            >
+              <strong>Как измерить стопу</strong>
+              <ol>
+                <li>Встаньте пяткой к стене на лист бумаги.</li>
+                <li>
+                  Отметьте самый дальний палец и измерьте расстояние от края
+                  листа.
+                </li>
+                <li>
+                  Измерьте обе ноги вечером и используйте большее значение.
+                </li>
+              </ol>
+              Запас уже заложен производителем — прибавлять его к замеру не
+              нужно.
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
 
-        {conversion?.sizes || conversion?.compare.length ? (
-          <div className="size-preview" aria-live="polite">
-            <Ruler size={17} aria-hidden="true" />
-            {conversion.sizes ? (
-              <>
-                <span className="size-preview__main">
-                  Ваш размер в {conversion.sizes.brand}:
-                </span>
-                <span className="size-preview__value">
-                  EU {formatNumber(conversion.sizes.eu)}
-                </span>
-                <span>
-                  US {formatNumber(conversion.sizes.us)} · UK{' '}
-                  {formatNumber(conversion.sizes.uk)}
-                  {' · '}ярлык {formatNumber(conversion.sizes.cm)} см
-                  {!conversion.sizes.exact ? ' · приблизительно' : ''}
-                </span>
-              </>
-            ) : (
-              <span>
-                Для «{form.brand}» точной таблицы нет — используем общую сетку
-                при поиске.
-              </span>
-            )}
-            {conversion.compare.length > 1 ? (
-              <div className="size-preview__compare">
-                <span>Для сравнения:</span>
-                {conversion.compare.map((item) => (
-                  <span key={item.brand}>
-                    {item.brand} EU {formatNumber(item.eu)}
+        <AnimatePresence initial={false} mode="wait">
+          {conversion?.sizes || conversion?.compare.length ? (
+            <motion.div
+              key="size-preview"
+              className="size-preview motion-collapse"
+              aria-live="polite"
+              initial={revealInitial}
+              animate={{ opacity: 1, height: 'auto', y: 0 }}
+              exit={revealExit}
+              transition={revealTransition}
+            >
+              <Ruler size={17} aria-hidden="true" />
+              {conversion.sizes ? (
+                <>
+                  <span className="size-preview__main">
+                    Ваш размер в {conversion.sizes.brand}:
                   </span>
-                ))}
-              </div>
-            ) : null}
-          </div>
-        ) : conversionLoading ? (
-          <p className="ui-field__hint" aria-live="polite">
-            Сверяю таблицу размеров…
-          </p>
-        ) : null}
+                  <motion.span
+                    className="size-preview__value"
+                    initial={reduceMotion ? false : { scale: 0.82 }}
+                    animate={{ scale: 1 }}
+                  >
+                    EU {formatNumber(conversion.sizes.eu)}
+                  </motion.span>
+                  <span>
+                    US {formatNumber(conversion.sizes.us)} · UK{' '}
+                    {formatNumber(conversion.sizes.uk)}
+                    {' · '}ярлык {formatNumber(conversion.sizes.cm)} см
+                    {!conversion.sizes.exact ? ' · приблизительно' : ''}
+                  </span>
+                </>
+              ) : (
+                <span>
+                  Для «{form.brand}» точной таблицы нет — используем общую сетку
+                  при поиске.
+                </span>
+              )}
+              {conversion.compare.length > 1 ? (
+                <div className="size-preview__compare">
+                  <span>Для сравнения:</span>
+                  {conversion.compare.map((item, index) => (
+                    <motion.span
+                      key={item.brand}
+                      initial={reduceMotion ? false : { opacity: 0, x: -5 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: reduceMotion ? 0 : index * 0.035 }}
+                    >
+                      {item.brand} EU {formatNumber(item.eu)}
+                    </motion.span>
+                  ))}
+                </div>
+              ) : null}
+            </motion.div>
+          ) : conversionLoading ? (
+            <motion.p
+              key="size-loading"
+              className="ui-field__hint motion-loading-line"
+              aria-live="polite"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+            >
+              Сверяю таблицу размеров…
+            </motion.p>
+          ) : null}
+        </AnimatePresence>
 
-        {form.depth === '0' ? (
-          <div className="notice">
-            <AlertTriangle size={17} aria-hidden="true" />
-            <span>
-              Весь каталог крупного бренда может занять десятки минут.
-              Ограничение цены ускоряет обработку; поиск можно остановить, а уже
-              найденные модели сохранятся.
-            </span>
-          </div>
-        ) : null}
+        <AnimatePresence initial={false}>
+          {form.depth === '0' ? (
+            <motion.div
+              key="catalog-warning"
+              className="notice motion-collapse"
+              initial={revealInitial}
+              animate={{ opacity: 1, height: 'auto', y: 0 }}
+              exit={revealExit}
+              transition={revealTransition}
+            >
+              <AlertTriangle size={17} aria-hidden="true" />
+              <span>
+                Весь каталог крупного бренда может занять десятки минут.
+                Ограничение цены ускоряет обработку; поиск можно остановить, а
+                уже найденные модели сохранятся.
+              </span>
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
 
-        {error ? (
-          <p className="ui-field__error" role="alert">
-            {error}
-          </p>
-        ) : null}
+        <AnimatePresence initial={false}>
+          {error ? (
+            <motion.p
+              key="form-error"
+              className="ui-field__error"
+              role="alert"
+              initial={{ opacity: 0, x: reduceMotion ? 0 : -6 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0 }}
+            >
+              {error}
+            </motion.p>
+          ) : null}
+        </AnimatePresence>
 
         <div className="search-form__secondary">
           <Field

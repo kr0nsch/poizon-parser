@@ -1,4 +1,5 @@
 import { BookmarkCheck, ExternalLink, Footprints, Search } from 'lucide-react'
+import { motion } from 'motion/react'
 import type { ReactNode } from 'react'
 
 import { ThemeToggle } from './ThemeToggle'
@@ -46,30 +47,55 @@ function Navigation({
       className={mobile ? 'mobile-header__nav' : 'app-nav'}
       aria-label="Основная навигация"
     >
-      <button
+      <motion.button
         className="app-nav__button"
         type="button"
         aria-current={activeView === 'search' ? 'page' : undefined}
+        whileHover={mobile ? { y: -1 } : { x: 3 }}
+        whileTap={{ scale: 0.98 }}
         onClick={() => onViewChange('search')}
       >
-        <Search size={17} aria-hidden="true" />
-        Поиск
-      </button>
-      <button
+        {activeView === 'search' ? (
+          <motion.span
+            className="app-nav__active"
+            layoutId={mobile ? 'mobile-nav-active' : 'sidebar-nav-active'}
+            aria-hidden="true"
+          />
+        ) : null}
+        <span className="app-nav__content">
+          <Search size={17} aria-hidden="true" />
+          Поиск
+        </span>
+      </motion.button>
+      <motion.button
         className="app-nav__button"
         type="button"
         aria-current={activeView === 'picks' ? 'page' : undefined}
+        whileHover={mobile ? { y: -1 } : { x: 3 }}
+        whileTap={{ scale: 0.98 }}
         onClick={() => onViewChange('picks')}
       >
-        <BookmarkCheck size={17} aria-hidden="true" />
-        Итоги
-        <span
-          className="app-nav__count"
-          aria-label={`Сохранено: ${picksCount}`}
-        >
-          {picksCount}
+        {activeView === 'picks' ? (
+          <motion.span
+            className="app-nav__active"
+            layoutId={mobile ? 'mobile-nav-active' : 'sidebar-nav-active'}
+            aria-hidden="true"
+          />
+        ) : null}
+        <span className="app-nav__content">
+          <BookmarkCheck size={17} aria-hidden="true" />
+          Итоги
+          <motion.span
+            key={picksCount}
+            className="app-nav__count"
+            aria-label={`Сохранено: ${picksCount}`}
+            initial={{ scale: 0.75, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+          >
+            {picksCount}
+          </motion.span>
         </span>
-      </button>
+      </motion.button>
     </nav>
   )
 }

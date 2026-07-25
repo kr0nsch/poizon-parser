@@ -79,6 +79,8 @@
 }
 
 .app-nav__button {
+  position: relative;
+  isolation: isolate;
   display: flex;
   width: 100%;
   min-height: 2.65rem;
@@ -90,6 +92,7 @@
   background: transparent;
   color: var(--ui-ink-soft);
   cursor: pointer;
+  overflow: hidden;
   font-size: 0.875rem;
   font-weight: 620;
   text-align: left;
@@ -101,9 +104,26 @@
 }
 
 .app-nav__button[aria-current='page'] {
-  border-color: color-mix(in srgb, var(--ui-action) 30%, var(--ui-line));
-  background: var(--ui-action-tint);
+  border-color: transparent;
+  background: transparent;
   color: var(--ui-action);
+}
+
+.app-nav__active {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  border: 1px solid color-mix(in srgb, var(--ui-action) 30%, var(--ui-line));
+  border-radius: inherit;
+  background: var(--ui-action-tint);
+}
+
+.app-nav__content {
+  position: relative;
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 0.7rem;
 }
 
 .app-nav__count {
@@ -172,6 +192,25 @@
 .app-content {
   width: min(100%, 82rem);
   padding: 1.5rem clamp(1.25rem, 4vw, 3.2rem) 4rem;
+}
+
+.motion-view {
+  min-width: 0;
+}
+
+.motion-theme-icon {
+  display: inline-grid;
+  place-items: center;
+}
+
+.motion-collapse {
+  overflow: hidden;
+}
+
+.motion-loading-line {
+  position: relative;
+  width: fit-content;
+  overflow: hidden;
 }
 
 .search-form {
@@ -376,6 +415,9 @@
 }
 
 .captcha-panel h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
   margin: 0;
   color: var(--ui-ink);
   font-size: 0.94rem;
@@ -468,11 +510,47 @@
   font-variant-numeric: tabular-nums;
 }
 
+.active-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  overflow: hidden;
+  padding-top: 0.55rem;
+}
+
+.filter-chip {
+  display: inline-flex;
+  min-height: 1.8rem;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid color-mix(in srgb, var(--ui-system) 28%, var(--ui-line));
+  border-radius: var(--ui-radius-sm);
+  padding: 0.25rem 0.48rem;
+  background: var(--ui-system-tint);
+  color: var(--ui-system);
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 620;
+}
+
+.filter-chip:hover {
+  border-color: var(--ui-system);
+}
+
 .product-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 18.5rem), 1fr));
   gap: 0.9rem;
   margin-top: 0.9rem;
+}
+
+.product-card-slot {
+  display: flex;
+  min-width: 0;
+}
+
+.product-card-slot > .product-card {
+  width: 100%;
 }
 
 .product-card {
@@ -690,8 +768,19 @@
   }
 
   .mobile-header__nav .app-nav__button[aria-current='page'] {
-    border-bottom-color: var(--ui-action);
     background: transparent;
+  }
+
+  .mobile-header__nav .app-nav__content {
+    justify-content: center;
+  }
+
+  .mobile-header__nav .app-nav__active {
+    inset: auto 0 0;
+    height: 2px;
+    border: 0;
+    border-radius: 0;
+    background: var(--ui-action);
   }
 
   .mobile-header__nav .app-nav__count {
