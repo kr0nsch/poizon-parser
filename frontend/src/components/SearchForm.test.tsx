@@ -73,6 +73,48 @@ describe('SearchForm', () => {
     expect(screen.getByText(/может занять десятки минут/i)).toBeInTheDocument()
   })
 
+  it('shows the official foot length and selected grid for New Balance', () => {
+    render(
+      <SearchForm
+        active={false}
+        brands={brands}
+        brandsLoading={false}
+        conversion={{
+          sizes: {
+            brand: 'New Balance',
+            gender: 'women',
+            requested_foot: 26.5,
+            exact: true,
+            eu: 41,
+            us: 9.5,
+            uk: 7.5,
+            cm: 26.5,
+            foot: 26.5,
+          },
+          compare: [],
+        }}
+        conversionLoading={false}
+        form={{
+          ...DEFAULT_SEARCH_FORM,
+          brand: 'New Balance',
+          gender: 'women',
+          size: '26.5',
+        }}
+        onCancel={vi.fn()}
+        onChange={vi.fn()}
+        onSubmit={vi.fn()}
+        starting={false}
+      />,
+    )
+
+    expect(
+      screen.getByText(/Ваш размер в New Balance \(женская сетка\)/),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/стопа 26,5 см/)).toBeInTheDocument()
+    expect(screen.queryByText(/ярлык/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/приблизительно/i)).not.toBeInTheDocument()
+  })
+
   it('filters suggestions to official charts without clearing the brand', async () => {
     const user = userEvent.setup()
     const onChange = vi.fn()

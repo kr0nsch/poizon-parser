@@ -196,22 +196,24 @@ class BrandChart:
     def by_foot(self, foot_cm: float, gender: str = "men") -> Optional[dict]:
         """Строка таблицы по замеру стопы.
 
-        Nike и Adidas публикуют длину стопы прямо — берём их колонку.
-        New Balance и ASICS публикуют только ярлык в сантиметрах (он же JP),
-        поэтому для них длина стопы переводится в US по шкале Брэннока
-        (её даёт таблица Nike, где есть обе колонки), а US — уже в EU по
-        собственной таблице бренда. Так сохраняются различия брендов там, где
-        они настоящие: в соответствии US → EU.
+        Если источник публикует длину стопы, берём её напрямую. Для таблиц,
+        где есть только размер CM/JP на ярлыке, длина стопы переводится в US
+        по шкале Брэннока (её даёт таблица Nike, где есть обе колонки), а US —
+        уже в EU по собственной таблице бренда. Так сохраняются различия
+        брендов там, где они настоящие: в соответствии US → EU.
         """
         rows = self.rows(gender)
         if not rows:
             return None
 
         if self.has_foot_column(gender):
-            best = min(
-                (r for r in rows if "foot" in r),
-                key=lambda r: abs(r["foot"] - foot_cm),
-                default=None,
+            measured_rows = sorted(
+                (row for row in rows if "foot" in row),
+                key=lambda row: row["foot"],
+            )
+            best = next(
+                (row for row in measured_rows if row["foot"] >= foot_cm - 1e-6),
+                None,
             )
             if best and abs(best["foot"] - foot_cm) <= 0.7:
                 return best
@@ -248,14 +250,23 @@ class BrandChart:
                 return None
             gender_label = "женская" if gender == "women" else "мужская"
             note = f"по официальной таблице {self.name} ({gender_label} сетка)"
-            if not self.has_foot_column(gender):
+            matched_foot = row.get("foot")
+            exact = matched_foot is not None and abs(matched_foot - value) <= 1e-6
+            if matched_foot is not None and not exact:
+                foot_label = f"{matched_foot:g}".replace(".", ",")
+                note += f", ближайшая длина стопы {foot_label} см"
+            elif matched_foot is None:
                 note += ", стопа переведена в US по шкале Брэннока"
-            # В cm отдаём ЯРЛЫК бренда в сантиметрах: он совпадает с «длиной
-            # стопы» в карточке POIZON, поэтому по нему удобно сверяться.
-            # Замер пользователя сюда подставлять нельзя — это разные величины.
+            # В cm отдаём опубликованную брендом колонку CM/JP/Length: по ней
+            # удобно сверяться с маркировкой карточки POIZON. Пользовательский
+            # замер сюда не подставляем, если источник различает эти величины.
             return Conversion(
-                eu=row["eu"], exact=True, source="brand", note=note,
-                cm=row.get("cm"), brand=self.name,
+                eu=row["eu"],
+                exact=exact,
+                source="brand",
+                note=note,
+                cm=row.get("cm"),
+                brand=self.name,
             )
         elif scale == EU:
             column = "eu"
@@ -391,7 +402,7 @@ def sizes_for_foot(
         "brand": chart.name,
         "gender": gender,
         "requested_foot": round(foot_cm, 1),
-        "exact": abs(row.get("foot", row.get("cm", foot_cm)) - foot_cm) <= 0.25,
+        "exact": ("foot" in row and abs(row["foot"] - foot_cm) <= 1e-6),
     }
     for key in ("eu", "us", "uk", "cm", "foot"):
         if key in row:

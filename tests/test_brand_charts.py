@@ -13,6 +13,7 @@ from poizon_parser.sizechart import (
     load_brand_charts,
     resolve_brand,
     resolve_official_chart,
+    sizes_for_foot,
 )
 
 
@@ -115,17 +116,52 @@ class TestOfficialConversion(unittest.TestCase):
         # 27 см как ЗАМЕР — это уже US 10, а не US 9.
         self.assertEqual(convert_to_eu(CM, 27.1, None, brand="Nike").eu, 44.0)
 
-    def test_brands_agree_on_same_foot_length(self):
-        # Одна и та же стопа должна давать сопоставимый размер у всех брендов.
-        eus = [
-            convert_to_eu(CM, 26.2, None, brand=b).eu
-            for b in ("Nike", "Adidas", "New Balance", "ASICS")
-        ]
-        self.assertTrue(max(eus) - min(eus) <= 0.7, eus)
+    def test_same_foot_uses_each_official_brand_grid(self):
+        expected = {
+            "Nike": 43.0,
+            "Adidas": 43.3333,
+            "New Balance": 42.0,
+            "ASICS": 43.5,
+        }
+        for brand, eu in expected.items():
+            with self.subTest(brand=brand):
+                self.assertAlmostEqual(
+                    convert_to_eu(CM, 26.5, None, brand=brand).eu,
+                    eu,
+                    places=3,
+                )
 
-    def test_brands_without_foot_column_use_brannock(self):
-        # У NB и ASICS длины стопы нет — перевод идёт через US.
-        result = convert_to_eu(CM, 26.2, None, brand="New Balance")
+    def test_new_balance_uses_published_length_for_each_grid(self):
+        men = sizes_for_foot("New Balance", 26.5, "men")
+        women = sizes_for_foot("New Balance", 26.5, "women")
+
+        self.assertEqual(
+            (men["eu"], men["us"], men["uk"], men["foot"]),
+            (42.0, 8.5, 8.0, 26.5),
+        )
+        self.assertEqual(
+            (women["eu"], women["us"], women["uk"], women["foot"]),
+            (41.0, 9.5, 7.5, 26.5),
+        )
+        self.assertTrue(men["exact"])
+        self.assertTrue(women["exact"])
+
+    def test_new_balance_rounds_between_rows_up(self):
+        result = sizes_for_foot("New Balance", 26.2, "men")
+        conversion = convert_to_eu(
+            CM,
+            26.2,
+            None,
+            brand="New Balance",
+        )
+
+        self.assertEqual((result["eu"], result["foot"]), (42.0, 26.5))
+        self.assertFalse(result["exact"])
+        self.assertFalse(conversion.exact)
+        self.assertIn("ближайшая длина стопы 26,5 см", conversion.note)
+
+    def test_chart_without_foot_column_uses_brannock(self):
+        result = convert_to_eu(CM, 26.2, None, brand="ASICS")
         self.assertEqual(result.source, "brand")
         self.assertIn("Брэннока", result.note)
 

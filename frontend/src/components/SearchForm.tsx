@@ -73,6 +73,13 @@ export function SearchForm({
       (brand) => brand.name.toLocaleLowerCase('ru-RU') === selectedName,
     )
   }, [brands, form.brand])
+  const convertedSize = conversion?.sizes
+  const convertedGrid =
+    convertedSize?.gender === 'women' ? 'женская' : 'мужская / унисекс'
+  const hasDistinctCmLabel =
+    convertedSize?.foot !== undefined &&
+    convertedSize.cm !== undefined &&
+    Math.abs(convertedSize.foot - convertedSize.cm) > 0.05
 
   function update<Key extends keyof StoredSearchForm>(
     key: Key,
@@ -263,7 +270,8 @@ export function SearchForm({
               {conversion.sizes ? (
                 <>
                   <span className="size-preview__main">
-                    Ваш размер в {conversion.sizes.brand}:
+                    Ваш размер в {conversion.sizes.brand} ({convertedGrid}{' '}
+                    сетка):
                   </span>
                   <motion.span
                     className="size-preview__value"
@@ -275,7 +283,16 @@ export function SearchForm({
                   <span>
                     US {formatNumber(conversion.sizes.us)} · UK{' '}
                     {formatNumber(conversion.sizes.uk)}
-                    {' · '}ярлык {formatNumber(conversion.sizes.cm)} см
+                    {conversion.sizes.foot !== undefined
+                      ? ` · стопа ${formatNumber(conversion.sizes.foot)} см`
+                      : ''}
+                    {conversion.sizes.cm !== undefined &&
+                    conversion.sizes.foot === undefined
+                      ? ` · CM ${formatNumber(conversion.sizes.cm)} см`
+                      : ''}
+                    {hasDistinctCmLabel
+                      ? ` · маркировка CM/JP ${formatNumber(conversion.sizes.cm)} см`
+                      : ''}
                     {!conversion.sizes.exact ? ' · приблизительно' : ''}
                   </span>
                 </>

@@ -7,10 +7,10 @@
     asics.com shoe-size-guide, полученные из подготовленной таблицы
     razmery_obuvi_new_balance_asics.xlsx
 
-Колонка «см» во всех четырёх таблицах — это размерный ярлык бренда в
-сантиметрах (он же JP/мондопоинт), а не результат замера стопы линейкой.
-Именно он совпадает с «Длиной стопы» в карточках POIZON, поэтому сопоставление
-остаётся согласованным.
+Смысл исходной колонки «см» зависит от бренда: у New Balance это официальная
+длина стопы (Length (cm)), а у Nike и Adidas — маркировка CM/JP. Когда источник
+публикует именно замер стопы, генератор дополнительно сохраняет его в поле
+``foot``; сопоставление размера всегда опирается на это нормализованное поле.
 
 Запуск:  python tools/build_size_charts.py [путь_к_xlsx]
 """
@@ -56,7 +56,7 @@ def num(value) -> float | None:
         return None
 
 
-#: Поля строки таблицы. `cm` — ярлык бренда в сантиметрах (он же JP),
+#: Поля строки таблицы. `cm` — опубликованная брендом колонка CM/JP/Length,
 #: `foot` — реальная длина стопы, под которую бренд рекомендует этот размер.
 FIELDS = ("us", "uk", "eu", "cm", "foot")
 
@@ -129,8 +129,17 @@ def read_xlsx(path: Path) -> dict[str, list[list[str]]]:
     return sheets
 
 
-def sheet_rows(rows: list[list[str]], mapping: dict[str, str]) -> list[dict]:
-    """Ищет строку заголовков и собирает по ней размеры."""
+def sheet_rows(
+    rows: list[list[str]],
+    mapping: dict[str, str],
+    *,
+    cm_is_foot_length: bool = False,
+) -> list[dict]:
+    """Ищет строку заголовков и собирает по ней размеры.
+
+    ``cm_is_foot_length`` используется только когда официальный источник прямо
+    называет колонку длиной стопы, а не размером CM/JP на ярлыке обуви.
+    """
     header_at = None
     for index, row in enumerate(rows):
         cleaned = [c.strip() for c in row]
@@ -150,6 +159,8 @@ def sheet_rows(rows: list[list[str]], mapping: dict[str, str]) -> list[dict]:
                 value = num(row[position])
                 if value is not None:
                     entry[key] = value
+        if cm_is_foot_length and "cm" in entry:
+            entry["foot"] = entry["cm"]
         if "eu" in entry and ("us" in entry or "foot" in entry or "cm" in entry):
             out.append(entry)
     return out
@@ -243,12 +254,26 @@ def main() -> int:
 
     if xlsx_path.exists():
         sheets = read_xlsx(xlsx_path)
-        nb_men = sheet_rows(sheets.get("NB Мужские", []), {
-            "US муж.": "us", "UK": "uk", "EU": "eu", "Длина стопы, см": "cm",
-        })
-        nb_women = sheet_rows(sheets.get("NB Женские", []), {
-            "US жен.": "us", "UK": "uk", "EU": "eu", "Длина стопы, см": "cm",
-        })
+        nb_men = sheet_rows(
+            sheets.get("NB Мужские", []),
+            {
+                "US муж.": "us",
+                "UK": "uk",
+                "EU": "eu",
+                "Длина стопы, см": "cm",
+            },
+            cm_is_foot_length=True,
+        )
+        nb_women = sheet_rows(
+            sheets.get("NB Женские", []),
+            {
+                "US жен.": "us",
+                "UK": "uk",
+                "EU": "eu",
+                "Длина стопы, см": "cm",
+            },
+            cm_is_foot_length=True,
+        )
         charts["new-balance"] = {
             "name": "New Balance",
             "source": "https://www.newbalance.com/size-guide.html",
