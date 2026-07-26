@@ -257,9 +257,15 @@ def _render_card(match: dict, esc) -> str:
     )
 
     chips = [f'<span class="chip size">{label}</span>']
+    foot = match.get("converted_foot")
     cm = match.get("converted_cm")
-    if cm:
-        chips.append(f'<span class="chip">ярлык {_num(cm)} см</span>')
+    if foot is not None:
+        chips.append(f'<span class="chip">стопа {_num(foot)} см</span>')
+    if cm is not None and (
+        foot is None or abs(float(foot) - float(cm)) > 0.05
+    ):
+        cm_label = "CM/JP" if foot is not None else "CM"
+        chips.append(f'<span class="chip">{cm_label} {_num(cm)} см</span>')
     if not match.get("exact_conversion", True):
         chips.append('<span class="chip approx">≈ перевод</span>')
 

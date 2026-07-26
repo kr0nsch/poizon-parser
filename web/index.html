@@ -350,7 +350,10 @@
             <span class="calc-alt">
               · US <span x-text="fmt(calc.sizes.us)"></span>
               · UK <span x-text="fmt(calc.sizes.uk)"></span>
-              · ярлык <span x-text="fmt(calc.sizes.cm)"></span> см
+              · стопа <span x-text="fmt(calc.sizes.foot)"></span> см
+              <span x-show="calc.sizes.cm != null && calc.sizes.foot != null && Math.abs(calc.sizes.cm - calc.sizes.foot) > .05">
+                · CM/JP <span x-text="fmt(calc.sizes.cm)"></span> см
+              </span>
             </span>
             <span class="calc-approx" x-show="!calc.sizes.exact" title="ближайшая строка таблицы">≈</span>
           </div>
@@ -524,9 +527,12 @@
               <div class="chips">
                 <span class="chip size" x-text="poizonLabel(m)"></span>
                 <span class="chip fit" x-show="fitHint(m.size_tip)" x-text="'посадка ' + fitHint(m.size_tip)" :title="m.size_tip"></span>
-                <span class="chip" x-show="m.converted_cm"
-                      title="Ярлык размера в сантиметрах по таблице бренда — по нему удобно сверяться с карточкой POIZON"
-                      x-text="'ярлык ' + String(m.converted_cm).replace('.', ',') + ' см'"></span>
+                <span class="chip" x-show="m.converted_foot != null"
+                      x-text="'стопа ' + String(m.converted_foot).replace('.', ',') + ' см'"></span>
+                <span class="chip"
+                      x-show="m.converted_cm != null && (m.converted_foot == null || Math.abs(m.converted_cm - m.converted_foot) > .05)"
+                      title="Маркировка CM/JP по официальной таблице бренда"
+                      x-text="(m.converted_foot == null ? 'CM ' : 'CM/JP ') + String(m.converted_cm).replace('.', ',') + ' см'"></span>
                 <span class="chip approx" x-show="!m.exact_conversion" :title="m.conversion_note || 'перевод шкалы приблизительный — сверьте на странице товара'">≈ перевод</span>
                 <span class="chip" x-show="m.variant && m.variant.indexOf('Оригинальная') === -1" x-text="m.variant"></span>
               </div>

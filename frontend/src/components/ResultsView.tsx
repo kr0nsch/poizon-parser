@@ -124,6 +124,8 @@ export function ResultsView({
       match.title,
       poizonSizeLabel(match),
       match.converted_eu,
+      match.converted_foot,
+      match.converted_cm,
       match.price,
       match.delivery,
       match.url,
@@ -131,7 +133,16 @@ export function ResultsView({
     downloadText(
       `${filename}.csv`,
       rowsToCsv([
-        ['Модель', 'Размер на POIZON', 'EU', 'Цена, ₽', 'Доставка', 'Ссылка'],
+        [
+          'Модель',
+          'Размер на POIZON',
+          'EU',
+          'Стопа, см',
+          'CM/JP, см',
+          'Цена, ₽',
+          'Доставка',
+          'Ссылка',
+        ],
         ...rows,
       ]),
       'text/csv;charset=utf-8',

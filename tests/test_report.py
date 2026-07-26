@@ -2,8 +2,6 @@
 
 import tempfile
 import unittest
-from pathlib import Path
-
 from poizon_parser.report import build_report_html, slugify, write_report
 
 MATCHES = [
@@ -13,7 +11,8 @@ MATCHES = [
         "image": "https://cdn-img.thepoizon.ru/pro-img/a.jpg",
         "price": 6800.0, "price_text": "6 800 ₽", "delivery": "3-5 дней",
         "sizes": {"RU": "41,5", "EU": "42,5"}, "converted_eu": 42.5,
-        "converted_cm": 27.0, "exact_conversion": True,
+        "converted_cm": 27.0, "converted_foot": 27.0,
+        "exact_conversion": True,
         "size_tip": "Размер больше, возьмите -0,5", "spu_id": 123, "sku_id": 1,
     },
     {
@@ -47,7 +46,8 @@ class TestBuildHtml(unittest.TestCase):
 
     def test_shows_size_and_labels(self):
         self.assertIn("RU 41,5 / EU 42,5", self.html)
-        self.assertIn("ярлык 27 см", self.html)
+        self.assertIn("стопа 27 см", self.html)
+        self.assertNotIn("ярлык", self.html)
 
     def test_links_to_poizon(self):
         self.assertIn("https://www.thepoizon.ru/product/x-123", self.html)

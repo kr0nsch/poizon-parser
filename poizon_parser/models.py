@@ -1,6 +1,6 @@
 """Модели данных парсера."""
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from typing import Optional
 
 
@@ -104,9 +104,10 @@ class Match:
     exact_conversion: bool = True
     conversion_source: str = "native"
     conversion_note: str = ""
-    #: Ярлык размера в сантиметрах по таблице бренда (он же JP/мондопоинт).
-    #: Не равен замеру стопы: у Nike EU 42,5 — ярлык 27 см при стопе 26,2 см.
+    #: Опубликованная брендом колонка CM/JP/Length.
     converted_cm: Optional[float] = None
+    #: Длина стопы из официальной строки бренда, если она опубликована.
+    converted_foot: Optional[float] = None
 
     def to_dict(self) -> dict:
         return {
@@ -119,6 +120,7 @@ class Match:
             "requested_scale": self.requested_scale,
             "converted_eu": self.converted_eu,
             "converted_cm": self.converted_cm,
+            "converted_foot": self.converted_foot,
             "exact_conversion": self.exact_conversion,
             "conversion_source": self.conversion_source,
             "conversion_note": self.conversion_note,

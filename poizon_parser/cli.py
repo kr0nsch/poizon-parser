@@ -15,7 +15,6 @@ from typing import Optional
 from .client import PoizonClient, PoizonError
 from .finder import SizeFinder
 from .models import Match, Product
-from .sizes import parse_size, parse_size_query
 
 
 def _setup_stdout() -> None:
@@ -504,19 +503,46 @@ def cmd_size(args) -> int:
         else:
             mark = "" if result["exact"] else " (≈ ближайший)"
             print(f"{result['brand']}{mark}:")
-            print(f"  EU {result.get('eu'):g}  ·  US {result.get('us'):g}  ·  "
-                  f"UK {result.get('uk'):g}  ·  ярлык {result.get('cm'):g} см")
+            values = [
+                f"EU {result['eu']:g}",
+                f"US {result['us']:g}" if result.get("us") is not None else "US —",
+                f"UK {result['uk']:g}" if result.get("uk") is not None else "UK —",
+            ]
+            if result.get("foot") is not None:
+                values.append(f"стопа {result['foot']:g} см")
+            if (
+                result.get("cm") is not None
+                and (
+                    result.get("foot") is None
+                    or abs(result["foot"] - result["cm"]) > 0.05
+                )
+            ):
+                values.append(f"CM/JP {result['cm']:g} см")
+            print("  " + "  ·  ".join(values))
             print()
 
     rows = compare_brands(foot, args.gender)
     if rows:
         print("Сравнение брендов:")
-        print(f"  {'Бренд':<14}{'EU':<9}{'US':<6}{'UK':<6}ярлык, см")
+        print(
+            f"  {'Бренд':<14}{'EU':<9}{'US':<6}{'UK':<6}"
+            f"{'стопа':<9}CM/JP"
+        )
         for r in rows:
             def f(k):
                 v = r.get(k)
                 return "—" if v is None else f"{v:g}".replace(".", ",")
-            print(f"  {r['brand']:<14}{f('eu'):<9}{f('us'):<6}{f('uk'):<6}{f('cm')}")
+            cm = (
+                f("cm")
+                if r.get("foot") is None
+                or r.get("cm") is None
+                or abs(r["foot"] - r["cm"]) > 0.05
+                else "—"
+            )
+            print(
+                f"  {r['brand']:<14}{f('eu'):<9}{f('us'):<6}{f('uk'):<6}"
+                f"{f('foot'):<9}{cm}"
+            )
         print("\nОдна стопа — разные EU: сетки брендов не совпадают, "
               "это нормально.")
     return 0

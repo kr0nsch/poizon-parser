@@ -16,6 +16,7 @@ const match: SearchMatch = {
   requested_scale: 'CM',
   converted_eu: 42,
   converted_cm: 26.5,
+  converted_foot: 25.8,
   exact_conversion: false,
   conversion_source: 'brand',
   conversion_note: 'По таблице бренда',
@@ -52,10 +53,30 @@ describe('ProductCard', () => {
     expect(
       screen.getByText('Приблизительный перевод · По таблице бренда'),
     ).toBeInTheDocument()
+    expect(screen.getByText('Стопа 25,8 см')).toBeInTheDocument()
+    expect(screen.getByText('CM/JP 26,5 см')).toBeInTheDocument()
     expect(screen.getByText('Инвентарный № INV-202')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'В итоги' }))
     expect(onPick).toHaveBeenCalledOnce()
     expect(onPick).toHaveBeenCalledWith(match)
+  })
+
+  it('does not call an official foot length a label', () => {
+    render(
+      <ProductCard
+        match={{
+          ...match,
+          brand: 'New Balance',
+          converted_cm: 26.5,
+          converted_foot: 26.5,
+          exact_conversion: true,
+        }}
+      />,
+    )
+
+    expect(screen.getByText('Стопа 26,5 см')).toBeInTheDocument()
+    expect(screen.queryByText(/ярлык/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/CM\/JP/)).not.toBeInTheDocument()
   })
 })

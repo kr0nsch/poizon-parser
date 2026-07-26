@@ -14,6 +14,7 @@ import type { Pick, PickQuery, SearchMatch } from '../api'
 import {
   fitHint,
   formatMoney,
+  formatNumber,
   poizonSizeLabel,
   thumbnailUrl,
 } from '../lib/format'
@@ -58,6 +59,10 @@ export function ProductCard({
   ]
     .filter(Boolean)
     .join(' · ')
+  const hasDistinctCmLabel =
+    match.converted_foot != null &&
+    match.converted_cm != null &&
+    Math.abs(match.converted_foot - match.converted_cm) > 0.05
 
   return (
     <MotionCard
@@ -112,8 +117,15 @@ export function ProductCard({
               Посадка {fit}
             </Badge>
           ) : null}
-          {match.converted_cm ? (
-            <Badge>Ярлык {match.converted_cm} см</Badge>
+          {match.converted_foot != null ? (
+            <Badge>Стопа {formatNumber(match.converted_foot)} см</Badge>
+          ) : null}
+          {match.converted_cm != null &&
+          (match.converted_foot == null || hasDistinctCmLabel) ? (
+            <Badge>
+              {hasDistinctCmLabel ? 'CM/JP' : 'CM'}{' '}
+              {formatNumber(match.converted_cm)} см
+            </Badge>
           ) : null}
           {!match.exact_conversion ? (
             <Badge

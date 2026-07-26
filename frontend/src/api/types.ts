@@ -72,6 +72,7 @@ export interface SearchMatch {
   requested_scale: SizeScale
   converted_eu: number | null
   converted_cm: number | null
+  converted_foot: number | null
   exact_conversion: boolean
   conversion_source: ConversionSource
   conversion_note: string

@@ -260,6 +260,8 @@ class SizeFinder:
         conversion = convert_to_eu(
             scale, value, chart, brand=brand or product.brand, gender=gender
         )
+        if not conversion.supported:
+            return None
 
         # Неточный перевод — разрешаем добрать ближайший размер сетки:
         # у Adidas шаг ⅓, и точного попадания в EU может не быть.
@@ -280,6 +282,7 @@ class SizeFinder:
         match.conversion_source = conversion.source
         match.conversion_note = conversion.note
         match.converted_cm = conversion.cm
+        match.converted_foot = conversion.foot
         return match
 
     def find_by_brand(

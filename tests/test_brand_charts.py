@@ -27,14 +27,38 @@ class TestChartsLoaded(unittest.TestCase):
     def test_each_chart_has_source_and_rows(self):
         for chart in load_brand_charts().values():
             self.assertTrue(chart.source.startswith("http"), chart.key)
+            self.assertEqual(chart.verified_at, "2026-07-26", chart.key)
+            self.assertTrue(chart.locale, chart.key)
+            self.assertEqual(set(chart.sources), {"men", "women"}, chart.key)
             self.assertGreater(len(chart.men), 10, chart.key)
             self.assertGreater(len(chart.women), 10, chart.key)
+            self.assertTrue(chart.has_foot_column("men"), chart.key)
+            self.assertTrue(chart.has_foot_column("women"), chart.key)
 
     def test_rows_sorted_and_consistent(self):
         for chart in load_brand_charts().values():
             for gender in ("men", "women"):
                 eus = [r["eu"] for r in chart.rows(gender) if "eu" in r]
                 self.assertEqual(eus, sorted(eus), f"{chart.key}/{gender}")
+                feet = [r["foot"] for r in chart.rows(gender) if "foot" in r]
+                self.assertEqual(
+                    feet, sorted(feet), f"{chart.key}/{gender}/foot"
+                )
+
+    def test_hardcoded_snapshot_row_counts(self):
+        charts = load_brand_charts()
+        expected = {
+            "nike": (38, 39),
+            "adidas": (28, 28),
+            "new-balance": (30, 25),
+            "asics": (24, 19),
+        }
+        for key, counts in expected.items():
+            self.assertEqual(
+                (len(charts[key].men), len(charts[key].women)),
+                counts,
+                key,
+            )
 
 
 class TestResolveBrand(unittest.TestCase):
@@ -55,6 +79,11 @@ class TestResolveBrand(unittest.TestCase):
     def test_unknown_brand_is_none(self):
         self.assertIsNone(resolve_brand("Puma"))
         self.assertIsNone(resolve_brand(None))
+
+    def test_substrings_do_not_impersonate_official_brands(self):
+        for name in ("NBA", "ANBOLUOLI", "MACHENIKE"):
+            with self.subTest(name=name):
+                self.assertIsNone(resolve_brand(name))
 
     def test_official_catalog_marker_uses_only_exact_aliases(self):
         self.assertEqual(resolve_official_chart("Nike").key, "nike")
@@ -121,7 +150,7 @@ class TestOfficialConversion(unittest.TestCase):
             "Nike": 43.0,
             "Adidas": 43.3333,
             "New Balance": 42.0,
-            "ASICS": 43.5,
+            "ASICS": 42.0,
         }
         for brand, eu in expected.items():
             with self.subTest(brand=brand):
@@ -160,10 +189,53 @@ class TestOfficialConversion(unittest.TestCase):
         self.assertFalse(conversion.exact)
         self.assertIn("ближайшая длина стопы 26,5 см", conversion.note)
 
-    def test_chart_without_foot_column_uses_brannock(self):
-        result = convert_to_eu(CM, 26.2, None, brand="ASICS")
-        self.assertEqual(result.source, "brand")
-        self.assertIn("Брэннока", result.note)
+    def test_asics_uses_its_own_published_cm_rows(self):
+        men = sizes_for_foot("ASICS", 26.5, "men")
+        women = sizes_for_foot("ASICS", 26.5, "women")
+
+        self.assertEqual(
+            (men["eu"], men["us"], men["uk"], men["foot"]),
+            (42.0, 8.5, 7.5, 26.5),
+        )
+        self.assertEqual(
+            (women["eu"], women["us"], women["uk"], women["foot"]),
+            (42.0, 10.0, 8.0, 26.5),
+        )
+        self.assertTrue(men["exact"])
+        self.assertTrue(women["exact"])
+
+    def test_asics_full_official_endpoints_are_present(self):
+        charts = load_brand_charts()
+        men = charts["asics"].men[-1]
+        women = charts["asics"].women[-1]
+        self.assertEqual(
+            (men["us"], men["uk"], men["eu"], men["foot"]),
+            (18.0, 17.0, 54.0, 34.5),
+        )
+        self.assertEqual(
+            (women["us"], women["uk"], women["eu"], women["foot"]),
+            (14.0, 12.0, 47.0, 30.0),
+        )
+
+    def test_sparse_upper_rows_still_round_up_inside_official_range(self):
+        cases = (
+            ("Adidas", 32.7, 33.5),
+            ("New Balance", 32.1, 33.0),
+            ("ASICS", 31.1, 32.0),
+        )
+        for brand, requested, expected_foot in cases:
+            with self.subTest(brand=brand):
+                result = sizes_for_foot(brand, requested, "men")
+                self.assertEqual(result["foot"], expected_foot)
+                self.assertFalse(result["exact"])
+
+    def test_nike_women_uses_separate_official_table(self):
+        result = sizes_for_foot("Nike", 24.1, "women")
+        self.assertEqual(
+            (result["us"], result["uk"], result["eu"], result["foot"]),
+            (7.5, 5.0, 38.5, 24.1),
+        )
+        self.assertTrue(result["exact"])
 
     def test_cm_reported_back(self):
         result = convert_to_eu(US_MEN, 9.0, None, brand="Nike")
@@ -194,9 +266,22 @@ class TestFallbacks(unittest.TestCase):
         self.assertEqual(result.eu, 42.0)
         self.assertNotEqual(result.source, "brand")
 
-    def test_size_outside_grid_falls_back(self):
+    def test_size_outside_official_grid_never_uses_another_grid(self):
         result = convert_to_eu(US_MEN, 40.0, None, brand="Nike")
-        self.assertNotEqual(result.source, "brand")
+        self.assertEqual(result.source, "brand")
+        self.assertFalse(result.supported)
+        self.assertIn("вне официальной таблицы Nike", result.note)
+
+    def test_out_of_range_us_women_names_women_grid(self):
+        result = convert_to_eu(US_WOMEN, 99.0, None, brand="Nike")
+        self.assertFalse(result.supported)
+        self.assertIn("женская сетка", result.note)
+
+    def test_millimetres_are_normalized_before_official_lookup(self):
+        result = convert_to_eu("MM", 265.0, None, brand="ASICS")
+        self.assertTrue(result.supported)
+        self.assertTrue(result.exact)
+        self.assertEqual((result.eu, result.foot), (42.0, 26.5))
 
     def test_nearest_row_marked_inexact(self):
         # 9,2 нет в сетке — берётся ближайшая строка, но помечается неточной.

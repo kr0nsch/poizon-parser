@@ -11,12 +11,10 @@
 до ~34,5 (US-шаг мельче EU-шага). Линейная экстраполяция от трёх строк на этом
 промахивается на 2–2,5 размера.
 
-Поэтому перевод US / UK / CM идёт по встроенной **эталонной лестнице** атлетической
-размерной сетки (`_STANDARD_LADDER`) — она покрывает весь диапазон и совпадает с
-реальным рядом EU-размеров товаров. Приоритет отдаётся собственной таблице
-товара, если размер попал в её строки (тогда перевод точный); всё остальное
-помечается «≈». У брендов с нестандартным шагом (Adidas — ⅓ размера) эталон может
-слегка расходиться, поэтому рядом всегда стоит ярлык POIZON для сверки.
+Для Nike, Adidas, New Balance и ASICS перевод идёт по захардкоженному снимку
+официальных мужских и женских таблиц. Межбрендовые подстановки запрещены. Для
+остальных брендов используется таблица конкретного товара, затем встроенная
+**эталонная лестница** (`_STANDARD_LADDER`); неточный перевод помечается «≈».
 
 Про «US» и «US мужской». В кроссовочном контексте «US» без уточнения — это
 **мужская** шкала (US_MEN). Женская (US_WOMEN) для той же пары примерно на 1,5
@@ -42,6 +40,7 @@ UK = "UK"
 US_MEN = "US M"
 US_WOMEN = "US W"
 CM = "CM"
+MM = "MM"
 
 #: Шкалы, которые POIZON публикует для каждого SKU — перевод не нужен.
 NATIVE_SCALES = (RU, EU)
@@ -62,7 +61,7 @@ _ALIASES = {
     "UK": UK, "БРИТ": UK,
     "US": US_MEN, "USM": US_MEN, "US M": US_MEN, "US МУЖСКИЕ": US_MEN,
     "USW": US_WOMEN, "US W": US_WOMEN, "US ЖЕНСКИЕ": US_WOMEN,
-    "CM": CM, "СМ": CM, "MM": "MM",
+    "CM": CM, "СМ": CM, "MM": MM,
 }
 
 #: Эталонная лестница атлетической размерной сетки (Nike/стандарт).
@@ -149,7 +148,9 @@ class Conversion:
     source: str  # "brand" | "native" | "table" | "standard" | "fallback"
     note: str = ""
     cm: Optional[float] = None
+    foot: Optional[float] = None
     brand: str = ""
+    supported: bool = True
 
 
 # ------------------------------------------------- официальные таблицы брендов
@@ -176,13 +177,16 @@ _BRAND_ALIASES = {
 class BrandChart:
     """Официальная размерная таблица бренда.
 
-    Строки — физические размеры: {us, uk, eu, cm}. Мужская и женская сетки
-    хранятся раздельно: у New Balance, например, они расходятся между собой.
+    Строки — физические размеры: {us, uk, eu, cm, foot}. Мужская и женская
+    сетки хранятся раздельно и имеют собственные официальные строки.
     """
 
     key: str
     name: str
     source: str
+    sources: dict[str, str] = field(default_factory=dict)
+    locale: str = ""
+    verified_at: str = ""
     men: list[dict[str, float]] = field(default_factory=list)
     women: list[dict[str, float]] = field(default_factory=list)
 
@@ -196,40 +200,30 @@ class BrandChart:
     def by_foot(self, foot_cm: float, gender: str = "men") -> Optional[dict]:
         """Строка таблицы по замеру стопы.
 
-        Если источник публикует длину стопы, берём её напрямую. Для таблиц,
-        где есть только размер CM/JP на ярлыке, длина стопы переводится в US
-        по шкале Брэннока (её даёт таблица Nike, где есть обе колонки), а US —
-        уже в EU по собственной таблице бренда. Так сохраняются различия
-        брендов там, где они настоящие: в соответствии US → EU.
+        Используется только собственная колонка ``foot`` бренда. Межбрендовые
+        подстановки запрещены: неполная официальная сетка должна вернуть
+        ``None``, а не незаметно перейти на шкалу другого производителя.
         """
         rows = self.rows(gender)
         if not rows:
             return None
 
-        if self.has_foot_column(gender):
-            measured_rows = sorted(
-                (row for row in rows if "foot" in row),
-                key=lambda row: row["foot"],
-            )
-            best = next(
-                (row for row in measured_rows if row["foot"] >= foot_cm - 1e-6),
-                None,
-            )
-            if best and abs(best["foot"] - foot_cm) <= 0.7:
-                return best
-            return None
-
-        us = _foot_to_us(foot_cm, gender)
-        if us is None:
-            return None
-        best = min(
-            (r for r in rows if "us" in r),
-            key=lambda r: abs(r["us"] - us),
-            default=None,
+        measured_rows = sorted(
+            (row for row in rows if "foot" in row),
+            key=lambda row: row["foot"],
         )
-        if best and abs(best["us"] - us) <= 0.3:
-            return best
-        return None
+        if not measured_rows:
+            return None
+        if (
+            foot_cm < measured_rows[0]["foot"] - 1e-6
+            or foot_cm > measured_rows[-1]["foot"] + 1e-6
+        ):
+            return None
+        best = next(
+            (row for row in measured_rows if row["foot"] >= foot_cm - 1e-6),
+            None,
+        )
+        return best
 
     def to_eu(
         self, scale: str, value: float, gender: str = "men"
@@ -243,8 +237,6 @@ class BrandChart:
         elif scale == UK:
             column = "uk"
         elif scale == CM:
-            # Замер стопы — отдельная ветка: у части брендов опубликована
-            # длина стопы, у остальных только ярлык в сантиметрах.
             row = self.by_foot(value, gender)
             if row is None:
                 return None
@@ -255,8 +247,6 @@ class BrandChart:
             if matched_foot is not None and not exact:
                 foot_label = f"{matched_foot:g}".replace(".", ",")
                 note += f", ближайшая длина стопы {foot_label} см"
-            elif matched_foot is None:
-                note += ", стопа переведена в US по шкале Брэннока"
             # В cm отдаём опубликованную брендом колонку CM/JP/Length: по ней
             # удобно сверяться с маркировкой карточки POIZON. Пользовательский
             # замер сюда не подставляем, если источник различает эти величины.
@@ -266,6 +256,7 @@ class BrandChart:
                 source="brand",
                 note=note,
                 cm=row.get("cm"),
+                foot=matched_foot,
                 brand=self.name,
             )
         elif scale == EU:
@@ -306,27 +297,9 @@ class BrandChart:
             source="brand",
             note=note,
             cm=best.get("cm"),
+            foot=best.get("foot"),
             brand=self.name,
         )
-
-
-def _foot_to_us(foot_cm: float, gender: str = "men") -> Optional[float]:
-    """Длина стопы → размер US по шкале, опубликованной Nike.
-
-    Nike — единственный из четырёх, кто печатает и длину стопы, и US в одной
-    строке, поэтому его таблица служит эталоном перевода «стопа → US» для
-    брендов, которые длину стопы не публикуют.
-    """
-    nike = load_brand_charts().get("nike")
-    if nike is None:
-        return None
-    rows = [r for r in nike.rows(gender) if "foot" in r and "us" in r]
-    if not rows:
-        return None
-    best = min(rows, key=lambda r: abs(r["foot"] - foot_cm))
-    if abs(best["foot"] - foot_cm) > 0.7:
-        return None
-    return best["us"]
 
 
 @lru_cache(maxsize=1)
@@ -344,6 +317,9 @@ def load_brand_charts() -> dict[str, BrandChart]:
             key=key,
             name=entry.get("name") or key,
             source=entry.get("source") or "",
+            sources=entry.get("sources") or {},
+            locale=entry.get("locale") or "",
+            verified_at=entry.get("verified_at") or "",
             men=entry.get("men") or [],
             women=entry.get("women") or [],
         )
@@ -362,26 +338,17 @@ def resolve_official_chart(name: Optional[str]) -> Optional[BrandChart]:
     charts = load_brand_charts()
     key = str(name).strip().lower()
     target = key if key in charts else _BRAND_ALIASES.get(key)
-    return charts.get(target) if target else None
+    chart = charts.get(target) if target else None
+    if chart is None:
+        return None
+    if not all(chart.has_foot_column(gender) for gender in ("men", "women")):
+        return None
+    return chart
 
 
 def resolve_brand(name: Optional[str]) -> Optional[BrandChart]:
-    """«Adidas Originals», «Jordan» → таблица нужного бренда."""
-    if not name:
-        return None
-    charts = load_brand_charts()
-    key = str(name).strip().lower()
-    if key in charts:
-        return charts[key]
-    if key in _BRAND_ALIASES:
-        return charts.get(_BRAND_ALIASES[key])
-    # Частичное совпадение: «Nike Sportswear» → nike.
-    for alias, target in _BRAND_ALIASES.items():
-        if key.startswith(alias) or alias in key:
-            chart = charts.get(target)
-            if chart:
-                return chart
-    return None
+    """«Adidas Originals», «Jordan» → таблица по явному алиасу."""
+    return resolve_official_chart(name)
 
 
 def sizes_for_foot(
@@ -596,12 +563,35 @@ def convert_to_eu(
     4. Типовое смещение.
     """
     scale = normalize_scale(scale) or EU
+    if scale == MM:
+        scale = CM
+        value /= 10
 
     brand_chart = resolve_brand(brand)
     if brand_chart is not None:
         result = brand_chart.to_eu(scale, value, gender)
         if result is not None:
             return result
+        if scale in {US_MEN, US_WOMEN, UK, CM}:
+            effective_gender = (
+                "women" if scale == US_WOMEN
+                else "men" if scale == US_MEN
+                else gender
+            )
+            gender_label = (
+                "женская" if effective_gender == "women" else "мужская"
+            )
+            return Conversion(
+                eu=value,
+                exact=False,
+                source="brand",
+                note=(
+                    f"размер вне официальной таблицы {brand_chart.name} "
+                    f"({gender_label} сетка)"
+                ),
+                brand=brand_chart.name,
+                supported=False,
+            )
 
     if chart is not None and chart.rows:
         result = chart.to_eu(scale, value)
