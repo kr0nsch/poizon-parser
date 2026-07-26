@@ -12,6 +12,7 @@ from poizon_parser.sizechart import (
     convert_to_eu,
     load_brand_charts,
     resolve_brand,
+    resolve_official_chart,
 )
 
 
@@ -53,6 +54,17 @@ class TestResolveBrand(unittest.TestCase):
     def test_unknown_brand_is_none(self):
         self.assertIsNone(resolve_brand("Puma"))
         self.assertIsNone(resolve_brand(None))
+
+    def test_official_catalog_marker_uses_only_exact_aliases(self):
+        self.assertEqual(resolve_official_chart("Nike").key, "nike")
+        self.assertEqual(
+            resolve_official_chart("Adidas Originals").key, "adidas"
+        )
+        self.assertEqual(resolve_official_chart("Adidas Neo").key, "adidas")
+        self.assertEqual(resolve_official_chart("Adidas TERREX").key, "adidas")
+        self.assertIsNone(resolve_official_chart("MACHENIKE"))
+        self.assertIsNone(resolve_official_chart("ANBOLUOLI"))
+        self.assertIsNone(resolve_official_chart("NBA"))
 
 
 class TestOfficialConversion(unittest.TestCase):

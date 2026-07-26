@@ -11,6 +11,7 @@ export interface StoredSearchForm {
   maxPrice: string
   pace: 'polite' | 'normal' | 'fast'
   kids: boolean
+  officialBrandsOnly: boolean
 }
 
 export const DEFAULT_SEARCH_FORM: StoredSearchForm = {
@@ -21,6 +22,7 @@ export const DEFAULT_SEARCH_FORM: StoredSearchForm = {
   maxPrice: '',
   pace: 'normal',
   kids: false,
+  officialBrandsOnly: false,
 }
 
 export function loadSearchForm(): StoredSearchForm {

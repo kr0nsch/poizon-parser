@@ -5,8 +5,11 @@ export type SearchPace = 'polite' | 'normal' | 'fast'
 export type SizeScale = 'EU' | 'RU' | 'UK' | 'US M' | 'US W' | 'CM' | 'MM'
 
 export interface Brand {
+  has_official_size_chart: boolean
   id: number
   name: string
+  size_chart_brand: string | null
+  size_chart_source: string | null
   slug: string
   url: string
 }

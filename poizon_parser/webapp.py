@@ -30,7 +30,7 @@ from .catalog import Catalog
 from .client import Cancelled, ChallengeRequired, PoizonClient, PoizonError
 from .finder import SizeFinder
 from .report import RESULT_DIR, write_report
-from .sizechart import EU, normalize_scale
+from .sizechart import EU, normalize_scale, resolve_official_chart
 from .sizes import parse_size_query
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -585,10 +585,20 @@ class App(ThreadingHTTPServer):
                 delay=0.3, cache_dir=str(CACHE_DIR), cache_ttl=BRANDS_TTL
             )
             catalog = Catalog(client)
-            self._brands_cache = [
-                {"id": b.brand_id, "name": b.name, "slug": b.slug, "url": b.url}
-                for b in catalog.brands()
-            ]
+            self._brands_cache = []
+            for brand in catalog.brands():
+                chart = resolve_official_chart(brand.name)
+                self._brands_cache.append(
+                    {
+                        "id": brand.brand_id,
+                        "name": brand.name,
+                        "slug": brand.slug,
+                        "url": brand.url,
+                        "has_official_size_chart": chart is not None,
+                        "size_chart_brand": chart.name if chart else None,
+                        "size_chart_source": chart.source if chart else None,
+                    }
+                )
             self._brands_at = time.time()
             return self._brands_cache
 

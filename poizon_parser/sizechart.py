@@ -162,7 +162,9 @@ _BRAND_ALIASES = {
     "jordan": "nike",           # Jordan — линейка Nike, сетка та же
     "air jordan": "nike",
     "adidas": "adidas",
+    "adidas neo": "adidas",
     "adidas originals": "adidas",
+    "adidas terrex": "adidas",
     "new balance": "new-balance",
     "newbalance": "new-balance",
     "nb": "new-balance",
@@ -335,6 +337,21 @@ def load_brand_charts() -> dict[str, BrandChart]:
             women=entry.get("women") or [],
         )
     return charts
+
+
+def resolve_official_chart(name: Optional[str]) -> Optional[BrandChart]:
+    """Возвращает официальную таблицу только для точного имени или алиаса.
+
+    В отличие от ``resolve_brand`` здесь нет поиска по подстроке: этот резолвер
+    используется для маркировки каталога и не должен считать, например, NBA
+    брендом New Balance из-за короткого алиаса ``nb``.
+    """
+    if not name:
+        return None
+    charts = load_brand_charts()
+    key = str(name).strip().lower()
+    target = key if key in charts else _BRAND_ALIASES.get(key)
+    return charts.get(target) if target else None
 
 
 def resolve_brand(name: Optional[str]) -> Optional[BrandChart]:

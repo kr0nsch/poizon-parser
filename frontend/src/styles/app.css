@@ -234,6 +234,46 @@
   gap: 1rem;
 }
 
+.official-brand-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem 1rem;
+  border: 1px solid color-mix(in srgb, var(--ui-system) 24%, var(--ui-line));
+  border-radius: var(--ui-radius-md);
+  padding: 0.72rem 0.82rem;
+  background: color-mix(
+    in srgb,
+    var(--ui-system-tint) 58%,
+    var(--ui-surface-raised)
+  );
+}
+
+.official-brand-filter .ui-choice {
+  flex: 1 1 24rem;
+}
+
+.official-brand-filter__count {
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--ui-system) 30%, var(--ui-line));
+  border-radius: 999px;
+  padding: 0.22rem 0.55rem;
+  background: var(--ui-surface-raised);
+  color: var(--ui-system);
+  font-size: 0.72rem;
+  font-weight: 720;
+  white-space: nowrap;
+}
+
+.official-brand-filter__notice {
+  flex: 1 1 100%;
+  margin: 0;
+  overflow: hidden;
+  color: var(--ui-warning);
+  font-size: 0.78rem;
+}
+
 .search-form__secondary {
   display: grid;
   grid-template-columns:

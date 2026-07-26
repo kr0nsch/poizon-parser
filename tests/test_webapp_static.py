@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from poizon_parser import webapp
+from poizon_parser.catalog import Brand
 
 
 class TestFrontendStaticFiles(unittest.TestCase):
@@ -155,6 +156,41 @@ class TestFrontendStaticFiles(unittest.TestCase):
         self.assertIn("set-cookie", headers)
         self.assertIn("HttpOnly", headers["set-cookie"])
         self.assertEqual(json.loads(body)["status"], "ok")
+
+    def test_brands_api_marks_official_size_charts(self) -> None:
+        brands = [
+            Brand(brand_id=1, name="Nike", url="/brand/nike"),
+            Brand(
+                brand_id=2,
+                name="Adidas Originals",
+                url="/brand/adidas-originals",
+            ),
+            Brand(brand_id=3, name="Puma", url="/brand/puma"),
+        ]
+        with (
+            patch.object(webapp, "PoizonClient"),
+            patch.object(webapp, "Catalog") as catalog_class,
+        ):
+            catalog_class.return_value.brands.return_value = brands
+            status, _, body = self.request("GET", "/api/brands")
+
+        self.assertEqual(status, 200)
+        payload = json.loads(body)["brands"]
+        by_name = {brand["name"]: brand for brand in payload}
+        self.assertTrue(by_name["Nike"]["has_official_size_chart"])
+        self.assertEqual(by_name["Nike"]["size_chart_brand"], "Nike")
+        self.assertTrue(
+            by_name["Nike"]["size_chart_source"].startswith("http")
+        )
+        self.assertTrue(
+            by_name["Adidas Originals"]["has_official_size_chart"]
+        )
+        self.assertEqual(
+            by_name["Adidas Originals"]["size_chart_brand"], "Adidas"
+        )
+        self.assertFalse(by_name["Puma"]["has_official_size_chart"])
+        self.assertIsNone(by_name["Puma"]["size_chart_brand"])
+        self.assertIsNone(by_name["Puma"]["size_chart_source"])
 
     def test_result_route_is_not_shadowed_by_frontend(self) -> None:
         result_dir = self.root / "result"

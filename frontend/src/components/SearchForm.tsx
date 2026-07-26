@@ -1,6 +1,6 @@
 import { AlertTriangle, Ruler, Search, Square } from 'lucide-react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
-import { useState, type FormEvent } from 'react'
+import { useMemo, useState, type FormEvent } from 'react'
 
 import type { Brand, ConversionResponse } from '../api'
 import { formatNumber } from '../lib/format'
@@ -13,6 +13,7 @@ import {
   FieldLabel,
   Panel,
   Select,
+  Switch,
 } from './ui'
 
 interface SearchFormProps {
@@ -54,6 +55,24 @@ export function SearchForm({
     duration: reduceMotion ? 0.1 : 0.24,
     ease: [0.22, 1, 0.36, 1] as const,
   }
+  const officialBrands = useMemo(() => {
+    const seenNames = new Set<string>()
+    return brands.filter((brand) => {
+      if (!brand.has_official_size_chart) return false
+      const normalizedName = brand.name.trim().toLocaleLowerCase('ru-RU')
+      if (seenNames.has(normalizedName)) return false
+      seenNames.add(normalizedName)
+      return true
+    })
+  }, [brands])
+  const suggestedBrands = form.officialBrandsOnly ? officialBrands : brands
+  const selectedBrand = useMemo(() => {
+    const selectedName = form.brand.trim().toLocaleLowerCase('ru-RU')
+    if (!selectedName) return undefined
+    return brands.find(
+      (brand) => brand.name.toLocaleLowerCase('ru-RU') === selectedName,
+    )
+  }, [brands, form.brand])
 
   function update<Key extends keyof StoredSearchForm>(
     key: Key,
@@ -80,14 +99,24 @@ export function SearchForm({
             hint={
               brandsLoading
                 ? 'Список подсказок загружается; бренд уже можно ввести вручную.'
-                : `Доступно подсказок: ${brands.length}`
+                : form.officialBrandsOnly
+                  ? `Брендов с официальной сеткой: ${suggestedBrands.length}`
+                  : `Доступно подсказок: ${brands.length}`
             }
             value={form.brand}
             onChange={(event) => update('brand', event.target.value)}
           />
           <datalist id="brand-options">
-            {brands.map((brand) => (
-              <option key={brand.id} value={brand.name} />
+            {suggestedBrands.map((brand) => (
+              <option
+                key={brand.id}
+                value={brand.name}
+                label={
+                  brand.has_official_size_chart
+                    ? `${brand.name} · официальная сетка`
+                    : brand.name
+                }
+              />
             ))}
           </datalist>
 
@@ -149,6 +178,46 @@ export function SearchForm({
             </Select>
             <FieldHint>Результаты появляются по мере проверки.</FieldHint>
           </div>
+        </div>
+
+        <div className="official-brand-filter">
+          <Switch
+            id="official-brands-only"
+            aria-label="Только бренды с официальной размерной сеткой"
+            aria-controls="brand-options"
+            label="Только бренды с официальной размерной сеткой"
+            description="Источник размеров — официальный сайт производителя."
+            checked={form.officialBrandsOnly}
+            onChange={(event) =>
+              update('officialBrandsOnly', event.target.checked)
+            }
+          />
+          <motion.span
+            key={`${officialBrands.length}-${brands.length}`}
+            className="official-brand-filter__count"
+            initial={reduceMotion ? false : { opacity: 0, scale: 0.94 }}
+            animate={{ opacity: 1, scale: 1 }}
+          >
+            {brandsLoading
+              ? 'Загружаю…'
+              : `${officialBrands.length} из ${brands.length}`}
+          </motion.span>
+          <AnimatePresence initial={false}>
+            {form.officialBrandsOnly &&
+            selectedBrand &&
+            !selectedBrand.has_official_size_chart ? (
+              <motion.p
+                className="official-brand-filter__notice"
+                role="status"
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+              >
+                «{selectedBrand.name}» остаётся выбранным, но для него будет
+                использована общая размерная сетка.
+              </motion.p>
+            ) : null}
+          </AnimatePresence>
         </div>
 
         <AnimatePresence initial={false}>
