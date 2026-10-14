@@ -20,8 +20,12 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        python: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
+        python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
         include:
+          # Python 3.9 уже без поддержки, и для новых образов Ubuntu его
+          # сборок нет — проверяем его на зафиксированной версии.
+          - os: ubuntu-24.04
+            python: "3.9"
           - os: windows-latest
             python: "3.12"
     steps:
