@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import base64
 import html
+import math
 import re
 import time
 import urllib.request
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 RESULT_DIR = ROOT / "result"
@@ -25,6 +27,19 @@ _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
+
+_SITE_URL = "https://www.thepoizon.ru"
+
+#: Домены, с которых разрешено скачивать фото для автономного отчёта.
+#: Результаты для отчёта присылает браузер, поэтому без этого списка сервер
+#: скачал бы что угодно — в том числе `file://` с локального диска.
+_IMAGE_HOSTS = ("thepoizon.ru", "poizon.com", "dewu.com", "dewucdn.com")
+_MAX_IMAGE_BYTES = 5 * 1024 * 1024
+_DATA_IMAGE_RE = re.compile(
+    r"^data:image/[a-z0-9.+-]+;base64,[a-z0-9+/]+=*$", re.IGNORECASE
+)
+#: Числовые поля результата: в отчёт они приходят из JSON браузера.
+_NUMERIC_FIELDS = ("price", "converted_eu", "converted_cm", "converted_foot")
 
 
 def _num(value: str) -> str:
@@ -68,14 +83,61 @@ def _poizon_label(match: dict) -> str:
     )
 
 
+def _is_web_url(url: str) -> bool:
+    return urlsplit(url).scheme.lower() in ("http", "https")
+
+
+def _is_image_host(url: str) -> bool:
+    """Картинка лежит на CDN сайта — только такие можно скачивать."""
+    if not _is_web_url(url):
+        return False
+    host = (urlsplit(url).hostname or "").lower()
+    return any(host == d or host.endswith("." + d) for d in _IMAGE_HOSTS)
+
+
+def _safe_link(url: Any) -> str:
+    """Ссылка на товар: только http(s) или путь сайта, иначе «#».
+
+    Отбрасывает `javascript:` и прочие схемы, которые иначе исполнились бы
+    при клике по карточке.
+    """
+    url = str(url or "").strip()
+    if url.startswith("/") and not url.startswith("//"):
+        return _SITE_URL + url
+    return url if _is_web_url(url) else "#"
+
+
+def _clean(match: Any) -> dict:
+    """Приводит строку результата к ожидаемым типам.
+
+    Отчёт строится из присланного браузером JSON: число может прийти строкой,
+    а мусорное значение не должно ронять рендер всего отчёта.
+    """
+    match = dict(match) if isinstance(match, dict) else {}
+    for key in _NUMERIC_FIELDS:
+        value = match.get(key)
+        try:
+            number = float(value) if value not in (None, "") else None
+        except (TypeError, ValueError):
+            number = None
+        match[key] = number if number is not None and math.isfinite(number) else None
+    if not isinstance(match.get("sizes"), dict):
+        match["sizes"] = {}
+    return match
+
+
 def _fetch_data_uri(url: str) -> Optional[str]:
-    """Скачивает картинку и кодирует в data: URI (для автономного отчёта)."""
+    """Скачивает картинку с CDN сайта и кодирует в data: URI."""
+    if not _is_image_host(url):
+        return None
     try:
         req = urllib.request.Request(_thumb(url, 360), headers={"User-Agent": _UA})
         with urllib.request.urlopen(req, timeout=20) as resp:
-            raw = resp.read()
-            ctype = resp.headers.get("Content-Type", "image/webp")
+            raw = resp.read(_MAX_IMAGE_BYTES + 1)
+            ctype = resp.headers.get_content_type()
     except Exception:  # noqa: BLE001 — картинка не критична для отчёта
+        return None
+    if len(raw) > _MAX_IMAGE_BYTES or not ctype.startswith("image/"):
         return None
     return f"data:{ctype};base64,{base64.b64encode(raw).decode('ascii')}"
 
@@ -143,7 +205,8 @@ font-size:12.5px;border-top:1px solid var(--line);}
 def build_report_html(matches: list[dict], meta: dict) -> str:
     """Собирает полный HTML-документ отчёта."""
     esc = html.escape
-    brand = meta.get("brand") or "—"
+    matches = [_clean(m) for m in matches]
+    brand = str(meta.get("brand") or "—")
     generated = meta.get("generated_at") or time.strftime("%d.%m.%Y %H:%M")
 
     prices = [m["price"] for m in matches if m.get("price") is not None]
@@ -167,7 +230,7 @@ def build_report_html(matches: list[dict], meta: dict) -> str:
     gender = "женская сетка" if meta.get("gender") == "women" else "мужская сетка"
 
     cards = "\n".join(_render_card(m, esc) for m in matches)
-    tip = next((m.get("size_tip") for m in matches if m.get("size_tip")), "")
+    tip = str(next((m.get("size_tip") for m in matches if m.get("size_tip")), ""))
     approx = any(not m.get("exact_conversion", True) for m in matches)
 
     notes = []
@@ -239,18 +302,20 @@ refresh();
 
 
 def _render_card(match: dict, esc) -> str:
-    title = esc(match.get("title") or "")
-    url = esc(match.get("url") or "#")
+    title = esc(str(match.get("title") or ""))
+    url = esc(_safe_link(match.get("url")))
     price = match.get("price")
     price_attr = f"{price:.0f}" if price is not None else ""
     label = esc(_poizon_label(match))
-    delivery = esc(match.get("delivery") or "")
-    image = match.get("image") or ""
+    delivery = esc(str(match.get("delivery") or ""))
+    image = str(match.get("image") or "")
 
-    if image.startswith("data:"):
-        img_src = image
+    if _DATA_IMAGE_RE.match(image):
+        img_src = esc(image)
+    elif _is_web_url(image):
+        img_src = esc(_thumb(image))
     else:
-        img_src = esc(_thumb(image)) if image else ""
+        img_src = ""
     img_html = (
         f'<img src="{img_src}" loading="lazy" alt="">' if img_src
         else '<div class="noimg">👟</div>'
@@ -275,7 +340,7 @@ def _render_card(match: dict, esc) -> str:
         <div class="title">{title}</div>
         <div class="chips">{''.join(chips)}</div>
         <div class="price-row">
-          <span class="price">{esc(_money(match))}</span>
+          <span class="price">{esc(str(_money(match)))}</span>
           <span class="delivery">{delivery}</span>
         </div>
         <a class="open" href="{url}" target="_blank" rel="noopener">Открыть на POIZON ↗</a>
@@ -297,7 +362,9 @@ def write_report(
         matches = _with_embedded_images(matches)
 
     brand_slug = slugify(meta.get("brand") or "poizon")
-    size_part = str(meta.get("size_input") or "").replace(",", "-").replace(".", "-")
+    # Размер приходит из запроса — в имени папки оставляем только [0-9a-z-].
+    size_part = re.sub(r"[^0-9a-z]+", "-", str(meta.get("size_input") or "").lower())
+    size_part = size_part.strip("-")[:16]
     stamp = time.strftime("%Y%m%d-%H%M%S")
     name = "-".join(p for p in (brand_slug, f"{size_part}cm" if size_part else "", stamp) if p)
 
@@ -316,7 +383,7 @@ def _with_embedded_images(matches: list[dict]) -> list[dict]:
     out = []
     for match in matches:
         image = match.get("image")
-        if image and not image.startswith("data:"):
+        if isinstance(image, str) and image and not image.startswith("data:"):
             data = _fetch_data_uri(image)
             if data:
                 match = {**match, "image": data}

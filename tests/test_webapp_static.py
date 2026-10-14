@@ -207,6 +207,62 @@ class TestFrontendStaticFiles(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(headers["content-type"], "text/html; charset=utf-8")
         self.assertIn(b"report", body)
+        # Отчёт открывается в песочнице: его скрипты не видят API приложения.
+        self.assertIn("sandbox", headers["content-security-policy"])
+        self.assertEqual(headers["x-content-type-options"], "nosniff")
+
+    def test_cross_site_post_is_rejected(self) -> None:
+        port = self.server.server_port
+        for origin in ("https://evil.example", "null", f"http://127.0.0.1:{port + 1}"):
+            with self.subTest(origin=origin):
+                status, _, body = self.request(
+                    "POST",
+                    "/api/picks",
+                    body=b'{"match": {"spu_id": 1}}',
+                    headers={"Content-Type": "text/plain", "Origin": origin},
+                )
+                self.assertEqual(status, 403)
+                self.assertIn("другого сайта", json.loads(body)["error"])
+
+    def test_cross_site_delete_is_rejected(self) -> None:
+        status, _, _ = self.request(
+            "DELETE", "/api/picks", headers={"Origin": "https://evil.example"}
+        )
+        self.assertEqual(status, 403)
+
+    def test_same_origin_post_is_allowed(self) -> None:
+        port = self.server.server_port
+        with patch.object(self.server, "picks") as picks:
+            picks.add.return_value = ({"id": "x"}, True)
+            status, _, body = self.request(
+                "POST",
+                "/api/picks",
+                body=b'{"match": {"spu_id": 1}}',
+                headers={
+                    "Content-Type": "application/json",
+                    "Origin": f"http://127.0.0.1:{port}",
+                },
+            )
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["created"])
+
+    def test_report_rejects_non_object_matches(self) -> None:
+        status, _, body = self.request(
+            "POST",
+            "/api/report",
+            body=b'{"matches": ["x", 1]}',
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("matches", json.loads(body)["error"])
+
+    def test_unexpected_error_returns_json_500(self) -> None:
+        with patch.object(self.server.jobs, "count", side_effect=RuntimeError("boom")), \
+                patch("traceback.print_exc"):
+            status, headers, body = self.request("GET", "/api/health")
+        self.assertEqual(status, 500)
+        self.assertEqual(headers["content-type"], "application/json; charset=utf-8")
+        self.assertIn("внутренняя", json.loads(body)["error"])
 
     def test_oversized_json_body_is_rejected(self) -> None:
         with patch.object(webapp, "MAX_JSON_BODY", 32):

@@ -6,18 +6,21 @@ API. Поиск — долгая операция (карточка товара
 оформлен как фоновая задача: POST /api/search запускает поток и возвращает id,
 фронтенд опрашивает GET /api/search/<id> и дорисовывает найденное на лету.
 
-Итоги (`data/picks.json`) — отобранные пользователем позиции; хранятся на диске
-и переживают перезапуск.
+Итоги (`data/picks/<uid>.json`) — отобранные пользователем позиции; у каждого
+браузера свои, хранятся на диске и переживают перезапуск.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import mimetypes
 import os
+import sys
 import tempfile
 import threading
 import time
+import traceback
 import uuid
 import webbrowser
 from http.cookies import CookieError, SimpleCookie
@@ -83,6 +86,8 @@ def validate_search(body: dict) -> Optional[str]:
         value = float(raw_size)
     except ValueError:
         return f"размер «{body.get('size')}» не число"
+    if not math.isfinite(value):
+        return f"размер «{body.get('size')}» не число"
     if value <= 0:
         return "размер должен быть больше нуля"
     # Для длины стопы — понятные границы, чтобы отсечь мм и опечатки.
@@ -96,13 +101,14 @@ def validate_search(body: dict) -> Optional[str]:
         raw = body.get(key)
         if raw not in (None, ""):
             try:
-                if float(raw) < 0:
-                    return f"{key} не может быть отрицательной"
+                price = float(raw)
             except (ValueError, TypeError):
                 return f"{key} должна быть числом"
+            if not math.isfinite(price):
+                return f"{key} должна быть числом"
+            if price < 0:
+                return f"{key} не может быть отрицательной"
     return None
-
-
 
 # --------------------------------------------------------------------- picks
 
@@ -655,6 +661,38 @@ class Handler(BaseHTTPRequestHandler):
         """Идентификатор пользователя из cookie (или 'anon', если её нет)."""
         return self._cookies().get(UID_COOKIE, "anon")
 
+    def _cross_origin(self) -> bool:
+        """Изменяющий запрос пришёл со страницы другого сайта (CSRF)?
+
+        Аутентификации нет, поэтому без проверки любая открытая в браузере
+        страница могла бы запускать поиски, менять итоги и писать отчёты на
+        диск. Браузер всегда шлёт Origin с POST/DELETE; клиенты без него
+        (curl, скрипты) пропускаем. Vite-прокси сохраняет Host, так что в
+        dev-режиме Origin и Host тоже совпадают.
+        """
+        origin = self.headers.get("Origin")
+        if origin is None:
+            return False
+        host = (self.headers.get("Host") or "").strip().lower()
+        return not host or urlparse(origin).netloc.lower() != host
+
+    def _reject_cross_origin(self) -> bool:
+        if not self._cross_origin():
+            return False
+        # Тело не читаем — соединение переиспользовать нельзя.
+        self.close_connection = True
+        self._json({"error": "запрос с другого сайта отклонён"}, 403)
+        return True
+
+    def _internal_error(self) -> None:
+        """Непредвиденная ошибка обработчика: трейс в консоль, клиенту — 500."""
+        traceback.print_exc(file=sys.stderr)
+        self.close_connection = True
+        try:
+            self._json({"error": "внутренняя ошибка сервера"}, 500)
+        except OSError:
+            pass
+
     def _send_uid_cookie_if_missing(self) -> None:
         """Добавляет личный uid cookie, если браузер ещё не получил его."""
         if UID_COOKIE in self._cookies():
@@ -764,6 +802,8 @@ class Handler(BaseHTTPRequestHandler):
             pass
         except PoizonError as exc:
             self._json({"error": str(exc)}, 502)
+        except Exception:  # noqa: BLE001 — ответить клиенту, а не оборвать связь
+            self._internal_error()
 
     def _serve_report(self, path: str) -> None:
         """Отдаёт сгенерированный отчёт из result/ (с защитой от выхода из папки)."""
@@ -782,6 +822,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        # Отчёт открывается в изолированном origin: даже если в него попадёт
+        # чужой скрипт, до API и cookie приложения он не дотянется.
+        self.send_header(
+            "Content-Security-Policy",
+            "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox",
+        )
         self.end_headers()
         self.wfile.write(body)
 
@@ -809,6 +856,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
         try:
+            if self._reject_cross_origin():
+                return
             if path == "/api/search":
                 body = self._body()
                 problem = validate_search(body)
@@ -870,6 +919,8 @@ class Handler(BaseHTTPRequestHandler):
                 },
                 413,
             )
+        except Exception:  # noqa: BLE001
+            self._internal_error()
 
     def _make_report(self, body: dict) -> None:
         """Собирает HTML-отчёт по результатам задачи в папке result/."""
@@ -881,6 +932,11 @@ class Handler(BaseHTTPRequestHandler):
         source = body.get("matches") or ((job or {}).get("matches"))
         if not source:
             self._json({"error": "нет результатов для отчёта"}, 400)
+            return
+        if not isinstance(source, list) or not all(
+            isinstance(item, dict) for item in source
+        ):
+            self._json({"error": "matches должен быть списком объектов"}, 400)
             return
 
         params = (job or {}).get("params") or {}
@@ -902,6 +958,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
         try:
+            if self._reject_cross_origin():
+                return
             if path == "/api/picks":
                 removed = self.server.picks.clear(self._uid())
                 self._json({"removed": removed})
@@ -912,6 +970,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "не найдено"}, 404)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
+        except Exception:  # noqa: BLE001
+            self._internal_error()
 
 
 def run_server(

@@ -7,9 +7,11 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    // changeOrigin: false сохраняет Host браузера: Python-сервер сверяет его
+    // с Origin и отклоняет изменяющие запросы с чужих сайтов.
     proxy: {
-      '/api': 'http://127.0.0.1:8765',
-      '/result': 'http://127.0.0.1:8765',
+      '/api': { target: 'http://127.0.0.1:8765', changeOrigin: false },
+      '/result': { target: 'http://127.0.0.1:8765', changeOrigin: false },
     },
   },
   build: {

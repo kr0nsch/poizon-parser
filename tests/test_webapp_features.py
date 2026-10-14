@@ -40,6 +40,16 @@ class TestValidateSearch(unittest.TestCase):
         msg = validate_search({"brand": "nike", "size": "26", "scale": "CM", "maxPrice": "дорого"})
         self.assertIn("числом", msg)
 
+    def test_non_finite_numbers_rejected(self):
+        # float() принимает «nan» и «inf», а сравнения с ними всегда ложны —
+        # без явной проверки такие значения проходили бы границы стопы.
+        for size in ("nan", "inf", "-inf"):
+            with self.subTest(size=size):
+                msg = validate_search({"brand": "nike", "size": size, "scale": "CM"})
+                self.assertIn("число", msg)
+        msg = validate_search({"brand": "nike", "size": "26", "maxPrice": "nan"})
+        self.assertIn("числом", msg)
+
 
 class TestJobRetention(unittest.TestCase):
     def test_finished_jobs_evicted_over_limit(self):
