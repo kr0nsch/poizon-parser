@@ -1,23 +1,47 @@
-# poizon-parser — обувь с thepoizon.ru в вашем размере
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/banner-dark.webp">
+  <img src="docs/images/banner-light.webp" alt="poizon-parser: длина стопы 26,5 см — это Nike EU 43, Adidas EU 43⅓, New Balance EU 42, ASICS EU 42, Reebok EU 42,5" width="100%">
+</picture>
+
+<div align="center">
+
+# poizon-parser
+
+**Обувь с thepoizon.ru, которая есть в наличии именно в вашем размере**
 
 [![CI](https://github.com/kr0nsch/poizon-parser/actions/workflows/ci.yml/badge.svg)](https://github.com/kr0nsch/poizon-parser/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-2e6b4f.svg)](LICENSE)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
+[![Backend: stdlib only](https://img.shields.io/badge/backend-stdlib%20only-0e7268.svg)](#быстрый-старт)
+[![Node.js 22.13+ | 24+](https://img.shields.io/badge/node-22.13%2B%20%7C%2024%2B-5FA04E.svg?logo=nodedotjs&logoColor=white)](frontend/package.json)
+
+[Как это выглядит](#как-это-выглядит) ·
+[Быстрый старт](#быстрый-старт) ·
+[Команды CLI](#команды-cli) ·
+[Как подбирается размер](#как-подбирается-размер) ·
+[JSON API](#json-api)
+
+</div>
 
 Вводите длину стопы в сантиметрах — получаете обувь выбранного бренда, которая
 **есть в наличии именно в вашем размере**, с ценой за этот размер, сроком
 доставки и фото. Размер переводится по официальным таблицам Nike, Adidas,
 New Balance, ASICS, Reebok и Puma, для остальных брендов — по общей сетке.
 
-**In English.** poizon-parser is an unofficial command-line tool and local web
-app for thepoizon.ru. You enter your foot length in centimetres (or a size in
-EU, UK or US); the tool converts it with the manufacturer's official size chart
-where one is available (Nike, Adidas, New Balance, ASICS, Reebok, Puma) or with
-a generic chart otherwise, matches the result against the RU/EU size
-labels POIZON puts on every item and lists the shoes that are in stock in that
-exact size, with the price for that size. The backend uses only the Python 3.9+
-standard library; the optional web UI is built with React and Vite. The rest of
-this document is in Russian.
+<details>
+<summary><b>In English</b></summary>
+
+poizon-parser is an unofficial command-line tool and local web app for
+thepoizon.ru. You enter your foot length in centimetres (or a size in EU, UK or
+US); the tool converts it with the manufacturer's official size chart where one
+is available (Nike, Adidas, New Balance, ASICS, Reebok, Puma) or with a generic
+chart otherwise, matches the result against the RU/EU size labels POIZON puts on
+every item and lists the shoes that are in stock in that exact size, with the
+price for that size. The backend uses only the Python 3.9+ standard library; the
+optional web UI is built with React and Vite. The rest of this document is in
+Russian.
+
+</details>
 
 > [!IMPORTANT]
 > **Неофициальный проект.** Инструмент не связан с POIZON / Dewu, не одобрен
@@ -26,6 +50,64 @@ this document is in Russian.
 > использования. Соблюдайте условия использования thepoizon.ru и держите темп
 > запросов вежливым: не уменьшайте паузу между запросами без нужды и не
 > запускайте много копий одновременно.
+
+## Как это выглядит
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/home-dark.webp">
+  <img src="docs/images/home-light.webp" alt="Форма поиска: бренд Nike, длина стопы 26,5 см; калькулятор показывает Nike EU 43 и размеры других брендов" width="100%">
+</picture>
+
+<p align="center"><sub>Живой калькулятор считает размер прямо при вводе — по официальной таблице бренда
+и для сравнения у остальных брендов, ещё до запуска поиска.</sub></p>
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/progress-light.webp" alt="Ход поиска: проверено 9 из 20 карточек, живой журнал и счётчик найденного">
+      <p align="center"><sub><b>Поиск идёт:</b> прогресс, оценка времени и живой монитор —<br>видно, что парсер делает прямо сейчас</sub></p>
+    </td>
+    <td width="50%" valign="top">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/images/results-dark.webp">
+        <img src="docs/images/results-light.webp" alt="Поиск завершён: 15 моделей Nike в EU 43 с фото, ярлыком POIZON, ценой и сроком доставки">
+      </picture>
+      <p align="center"><sub><b>Результаты:</b> только размеры в наличии, цена именно вашего размера,<br>фильтры, сортировка и выгрузка в CSV, JSON и HTML</sub></p>
+    </td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/images/mobile-form-dark.webp" alt="Мобильная версия: длина стопы и калькулятор размера" width="260">
+  &nbsp;&nbsp;&nbsp;
+  <img src="docs/images/mobile-results-dark.webp" alt="Мобильная версия: карточка найденной модели" width="260">
+</p>
+
+<p align="center"><sub>Интерфейс адаптирован для телефона и умеет светлую и тёмную темы.
+Скриншоты сняты на страницах thepoizon.ru, сохранённых 26 июля 2026 года: цены и наличие — на ту дату,
+а «Запросов к сайту: 0» — потому что все страницы взяты из кэша. В том снимке сохранено 20 карточек Nike,
+поэтому счётчики показывают «из 20», хотя глубина в форме — 40 моделей.</sub></p>
+
+## Возможности
+
+- **Размер по длине стопы, а не по «42 на глаз».** Официальные таблицы Nike,
+  Adidas, New Balance, ASICS и Reebok, мужская и женская сетки отдельно; Puma
+  (её таблица есть только для US, UK и EU) и остальные бренды — по общей сетке
+  стопы с пометкой «≈».
+- **Только то, что есть в наличии, и цена вашего размера.** Не «цена от» по
+  всем размерам, а цена конкретной пары, плюс срок доставки и полный ярлык
+  POIZON для сверки.
+- **Веб-интерфейс:** живой калькулятор, результаты на лету, фильтры и
+  сортировка, личные «Итоги», выгрузка в CSV (под русский Excel) и JSON,
+  светлая и тёмная темы, мобильная вёрстка.
+- **CLI из десяти команд** — от калькулятора, которому не нужна сеть, до обхода
+  всех брендов с официальной таблицей; вывод в таблицу, JSON, CSV или HTML.
+- **HTML-отчёт** — один файл с фото, ценами и ссылками, который можно переслать
+  кому угодно; по желанию фото вшиваются, и отчёт открывается без интернета.
+- **Бережно к сайту:** общий ограничитель частоты, дисковый кэш, предфильтр по
+  цене, пережидание 429 и пауза для ручного прохождения капчи.
+- **Без зависимостей:** бэкенд — только стандартная библиотека Python 3.9+;
+  тесты и CI на Linux и Windows.
 
 ## Содержание
 
@@ -85,48 +167,27 @@ python main.py --help                  # список команд
 
 Калькулятор `size` работает по встроенным таблицам и к сайту не обращается:
 
-```text
-Длина стопы 26,5 см · мужская сетка
+<p align="center">
+  <img src="docs/images/cli-size.webp" alt="Вывод python main.py size 26,5 -b nike: Nike EU 43, US 9,5, UK 8,5 и сравнение с Adidas, New Balance, ASICS, Reebok" width="560">
+</p>
 
-Nike (≈ ближайший):
-  EU 43  ·  US 9,5  ·  UK 8,5  ·  стопа 26,7 см  ·  CM/JP 27,5 см
+А так выглядит выдача `shoes` — настоящий вывод на страницах сайта,
+сохранённых 26 июля 2026 года (`-n 8` — первые восемь найденных моделей,
+отсортированные по цене). На
+картинке вывод обрезан: дальше идут ещё примечание о таблице бренда, пояснение
+к колонке «Посадка» и нумерованный список ссылок на карточки.
 
-Сравнение брендов:
-  Бренд         EU       US    UK    стопа    CM/JP
-  Nike          43       9,5   8,5   26,7     27,5
-  Adidas        43⅓      9,5   9     26,7     27,5
-  New Balance   42       8,5   8     26,5     —
-  ASICS         42       8,5   7,5   26,5     —
-  Reebok        42,5     9,5   8,5   26,7     —
-
-Одна стопа — разные EU: сетки брендов не совпадают, это нормально.
-Нет в сравнении: Puma (не публикует длину стопы)
-```
-
-Так выглядит выдача `shoes -b nike -s 26,5`: формат настоящий, а модели, цены и
-SPU условные. Под таблицей ещё печатается нумерованный список ссылок на
-карточки.
-
-```text
-#  Модель                                        Размер на POIZON  Посадка  Цена        Доставка    SPU
-─  ────────────────────────────────────────────  ────────────────  ───────  ──────────  ──────────  ────
-1  Nike Dunk Low Retro Низкие кроссовки Чёрно-…  RU 42 / EU 43     -0,5     ≈ 8 790 ₽   21-25 дней  1002
-2  Nike Air Force 1 '07 Низкие кроссовки Белые   RU 42 / EU 43     —        ≈ 10 450 ₽  3-5 дней    1001
-3  Nike Pegasus 41 Беговые кроссовки Серые       RU 42 / EU 43     —        ≈ 11 200 ₽  7-10 дней   1003
-
-В наличии: 3 модели · от 8 790 ₽ до 11 200 ₽
-Запрошено: 26,5 CM → EU 43
-«≈» у 3 из 3: точного перевода из CM в таблице модели нет, взят ближайший размер — сверьте по ссылке.
-Примечание: по официальной таблице Nike (мужская сетка), ближайшая длина стопы 26,7 см
-Колонка «Посадка» — рекомендация сайта: на сколько сместить размер.
-```
+<p align="center">
+  <img src="docs/images/cli-shoes.webp" alt="Вывод python main.py shoes -b nike -s 26,5 -n 8: восемь моделей Nike в RU 42 / EU 43 с ценой, сроком доставки и SPU">
+</p>
 
 - **«Размер на POIZON»** — полный ярлык, под которым размер лежит на сайте:
   по нему удобно сверяться с карточкой.
 - **«≈» перед ценой** относится к переводу размера, а не к цене: 26,5 см нет в
   таблице Nike, поэтому взята ближайшая строка — стопа 26,7 см, EU 43.
-- **«Посадка»** — совет сайта для модели; `-0,5` значит «модель большемерит,
-  берите на полразмера меньше». Парсер его только показывает.
+- **«Посадка»** — совет сайта для модели: `+0,5` значит «модель маломерит,
+  берите на полразмера больше», `-0,5` — наоборот. Парсер его только
+  показывает.
 
 ## Команды CLI
 
@@ -330,8 +391,8 @@ python main.py sizes 8900001978861819 --in-stock
 python main.py sizes https://www.thepoizon.ru/product/new-balance-530-white-natural-indigo-sneakers-8900001978861819 -f json
 ```
 
-Вывод на сохранённой карточке New Balance 530 из `tests/fixtures` (цены на
-момент снимка):
+<details>
+<summary>Пример вывода на сохранённой карточке New Balance 530 из <code>tests/fixtures</code> (цены на момент снимка)</summary>
 
 ```text
 New Balance NB 530 Сетчатая ткань Текстиль Низкий топ Повседневные Городские Коммутатор Беговые кроссовки Унисекс
@@ -364,6 +425,8 @@ RU    EU    Вариант          Цена      Наличие  Доставк
 
 В наличии 19 из 23 размеров · от 6 700 ₽ до 19 490 ₽
 ```
+
+</details>
 
 Колонка «Вариант» объясняет, почему размер встречается дважды: это разная
 полнота или издание, и цены у них разные. `-f json` содержит те же поля по
@@ -422,19 +485,19 @@ Nike EU 42, на POIZON эта пара лежит под ярлыком **«RU 
 стопы, а в выдаче всегда показан полный ярлык POIZON.
 
 **2. Цена привязана к размеру, а не к модели.** Каждый размер выставляют разные
-продавцы. В примере выше у New Balance 530 EU 42 стоит 7 050 ₽, EU 45,5 —
+продавцы. В [примере команды `sizes`](#sizes--все-размеры-и-цены-одной-модели) у New Balance 530 EU 42 стоит 7 050 ₽, EU 45,5 —
 19 490 ₽, а узкая полнота EU 42,5 — 17 251 ₽ против 7 650 ₽ за стандартную.
 «Цена от» на карточке — минимум по всем размерам и к вашему размеру обычно
 отношения не имеет. Парсер берёт цену конкретного размера.
 
 ### От замера стопы к паре в наличии
 
-```text
-длина стопы, см
-      ↓  официальная таблица бренда, мужская или женская сетка
-EU-размер этого бренда
-      ↓  сравнение с ярлыками SKU на POIZON (RU / EU)
-конкретная пара в наличии + цена этого размера
+```mermaid
+flowchart LR
+    foot["Длина стопы<br/>26,5 см"] --> chart{{"Официальная таблица бренда<br/>мужская или женская сетка"}}
+    chart --> eu["EU-размер бренда<br/>Nike EU 43"]
+    eu --> label["Ярлык SKU на POIZON<br/>RU 42 / EU 43"]
+    label --> offer["Пара в наличии<br/>+ цена этого размера"]
 ```
 
 **Как мерить.** Встаньте на лист бумаги пяткой к стене, отметьте самый дальний
@@ -820,6 +883,10 @@ TypeScript, Tailwind CSS 4 и TanStack Query.
 убрать по одной или очистить все, а подборку — выгрузить в CSV и JSON. Итоги
 хранятся на сервере, личные у каждого браузера, и переживают перезапуск.
 
+<p align="center">
+  <img src="docs/images/picks-light.webp" alt="Раздел «Итоги»: сохранённые модели Nike с запросом «стопа 26,5 см», временем сохранения, ценой и кнопками «Открыть» и «Убрать»" width="760">
+</p>
+
 ### Многопользовательский режим
 
 ```bash
@@ -914,6 +981,10 @@ python main.py web --host 0.0.0.0
 получатель откроет его в браузере и увидит все модели с фото, ценами,
 размерами и ссылками на POIZON. В CLI его делает `-f html` (команды `shoes` и
 `allbrands`), в вебе — кнопка «HTML-отчёт».
+
+<p align="center">
+  <img src="docs/images/report-light.webp" alt="HTML-отчёт: «Nike — ваш размер в наличии», 15 моделей с ценами от 4 850 до 10 990 ₽, сортировка и фильтр, карточки с фото" width="820">
+</p>
 
 - Каждый прогон получает свою папку: `result/<бренд>-<размер>-<дата>-<время>/index.html`,
   например `result/nike-26-5cm-20261015-143000/index.html`. В части размера
@@ -1080,6 +1151,7 @@ Workflow [CI](.github/workflows/ci.yml) на каждый push в `main` и pull
 ├── frontend/                  # интерфейс на React + Vite
 ├── web/index.html             # запасной интерфейс без сборки
 ├── tests/                     # unittest и фикстура карточки
+├── docs/images/               # скриншоты и баннер для README
 └── .github/workflows/ci.yml
 ```
 
