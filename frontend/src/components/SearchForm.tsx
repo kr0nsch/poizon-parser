@@ -3,7 +3,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { useMemo, useRef, useState, type FormEvent } from 'react'
 
 import type { Brand, ConversionResponse } from '../api'
-import { formatNumber } from '../lib/format'
+import { formatNumber, formatSize } from '../lib/format'
 import type { StoredSearchForm } from '../lib/storage'
 import { useFocusRescue } from '../lib/utils'
 import {
@@ -95,7 +95,7 @@ export function SearchForm({
   // с анимацией, а только что вставленные live-области скринридеры часто
   // не озвучивают.
   const sizeAnnouncement = convertedSize
-    ? `Ваш размер в ${convertedSize.brand}: EU ${formatNumber(convertedSize.eu)}, US ${formatNumber(convertedSize.us)}, UK ${formatNumber(convertedSize.uk)}${convertedSize.exact ? '' : ', приблизительно'}`
+    ? `Ваш размер в ${convertedSize.brand}: EU ${formatSize(convertedSize.eu)}, US ${formatSize(convertedSize.us)}, UK ${formatSize(convertedSize.uk)}${convertedSize.exact ? '' : ', приблизительно'}`
     : conversion?.compare.length
       ? noChartText
       : ''
@@ -300,11 +300,11 @@ export function SearchForm({
                     initial={reduceMotion ? false : { scale: 0.82 }}
                     animate={{ scale: 1 }}
                   >
-                    EU {formatNumber(conversion.sizes.eu)}
+                    EU {formatSize(conversion.sizes.eu)}
                   </motion.span>
                   <span>
-                    US {formatNumber(conversion.sizes.us)} · UK{' '}
-                    {formatNumber(conversion.sizes.uk)}
+                    US {formatSize(conversion.sizes.us)} · UK{' '}
+                    {formatSize(conversion.sizes.uk)}
                     {conversion.sizes.foot !== undefined
                       ? ` · стопа ${formatNumber(conversion.sizes.foot)} см`
                       : ''}
@@ -331,7 +331,7 @@ export function SearchForm({
                       animate={{ opacity: 1, x: 0 }}
                       transition={{ delay: reduceMotion ? 0 : index * 0.035 }}
                     >
-                      {item.brand} EU {formatNumber(item.eu)}
+                      {item.brand} EU {formatSize(item.eu)}
                     </motion.span>
                   ))}
                 </div>

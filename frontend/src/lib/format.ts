@@ -7,6 +7,21 @@ export function formatNumber(value: number | null | undefined): string {
   }).format(value)
 }
 
+const THIRDS: readonly [number, string][] = [
+  [1 / 3, '⅓'],
+  [2 / 3, '⅔'],
+]
+
+/** Размер обуви: трети — как на ярлыках Adidas («43⅓»), остальное — «42,5». */
+export function formatSize(value: number | null | undefined): string {
+  if (value == null) return '—'
+  const whole = Math.floor(value)
+  const third = THIRDS.find(
+    ([fraction]) => Math.abs(value - whole - fraction) < 0.01,
+  )
+  return third ? `${whole}${third[1]}` : formatNumber(value)
+}
+
 export function formatMoney(
   match: Pick<SearchMatch, 'price' | 'price_text'>,
 ): string {

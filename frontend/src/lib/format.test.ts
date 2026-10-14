@@ -5,6 +5,7 @@ import {
   deliveryDays,
   fitHint,
   formatMoney,
+  formatSize,
   poizonSizeLabel,
   slugify,
   thumbnailUrl,
@@ -29,6 +30,14 @@ describe('format helpers', () => {
         sizes: { EU: '42,5' },
       }),
     ).toBe('EU 42,5')
+  })
+
+  it('formats shoe sizes with thirds like Adidas labels', () => {
+    expect(formatSize(43 + 1 / 3)).toBe('43⅓')
+    expect(formatSize(42.6667)).toBe('42⅔')
+    expect(formatSize(42.5)).toBe('42,5')
+    expect(formatSize(42)).toBe('42')
+    expect(formatSize(null)).toBe('—')
   })
 
   it('extracts delivery and fit values', () => {
