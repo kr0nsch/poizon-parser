@@ -101,11 +101,160 @@ class TestFrontendStaticFiles(unittest.TestCase):
         status, headers, _ = self.request(
             "GET",
             "/index.html",
-            headers={"Cookie": "poizon_uid=existing-user"},
+            headers={"Cookie": f"poizon_uid={'ab12' * 8}"},
         )
 
         self.assertEqual(status, 200)
         self.assertNotIn("set-cookie", headers)
+
+    def test_malformed_uid_cookie_is_replaced(self) -> None:
+        # Мусор в cookie сводился бы к общему файлу итогов — выдаём новый uid.
+        status, headers, _ = self.request(
+            "GET",
+            "/index.html",
+            headers={"Cookie": "poizon_uid=existing-user"},
+        )
+
+        self.assertEqual(status, 200)
+        self.assertRegex(headers["set-cookie"], r"^poizon_uid=[0-9a-f]{32};")
+
+    def use_temp_picks(self) -> Path:
+        picks_dir = self.root / "picks"
+        self.server.picks = webapp.PickStore(picks_dir)
+        return picks_dir
+
+    @staticmethod
+    def cookie_uid(headers: dict[str, str]) -> str:
+        return headers["set-cookie"].split(";", 1)[0].split("=", 1)[1]
+
+    def test_requests_without_cookie_never_touch_shared_bucket(self) -> None:
+        picks_dir = self.use_temp_picks()
+        picks_dir.mkdir()
+        shared = picks_dir / "anon.json"
+        shared.write_text(
+            json.dumps([{"id": "old", "match": {"spu_id": 1}, "query": {}}]),
+            encoding="utf-8",
+        )
+
+        status, headers, body = self.request("GET", "/api/picks")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["items"], [])
+        self.assertIn("set-cookie", headers)
+
+        status, headers, body = self.request(
+            "POST",
+            "/api/picks",
+            body=b'{"match": {"spu_id": 7, "sku_id": 8}, "query": {}}',
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 200)
+        uid = self.cookie_uid(headers)
+        # Позиция записана тому uid, который ушёл в cookie этого же ответа.
+        self.assertTrue((picks_dir / f"{uid}.json").is_file())
+        self.assertEqual(len(json.loads(shared.read_text(encoding="utf-8"))), 1)
+
+        _, _, body = self.request(
+            "GET", "/api/picks", headers={"Cookie": f"poizon_uid={uid}"}
+        )
+        items = json.loads(body)["items"]
+        self.assertEqual([item["match"]["spu_id"] for item in items], [7])
+
+    def test_missing_pick_delete_is_explained(self) -> None:
+        self.use_temp_picks()
+        status, _, body = self.request(
+            "DELETE",
+            "/api/picks/abc",
+            headers={"Cookie": f"poizon_uid={'ab12' * 8}"},
+        )
+        self.assertEqual(status, 404)
+        payload = json.loads(body)
+        self.assertFalse(payload["ok"])
+        self.assertIn("уже нет", payload["error"])
+
+    def add_job(self, **overrides) -> dict:
+        job = webapp.JobManager._new_job(
+            {"brand": "nike", "size": "26.5", "scale": "CM", "gender": "men"}
+        )
+        job.update(overrides)
+        self.server.jobs._jobs[job["id"]] = job
+        return job
+
+    def post_json(self, path: str, payload: dict) -> tuple[int, dict]:
+        status, _, body = self.request(
+            "POST",
+            path,
+            body=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        return status, json.loads(body)
+
+    def test_job_actions_explain_refusals(self) -> None:
+        status, payload = self.post_json("/api/search/nope/cancel", {})
+        self.assertEqual(status, 404)
+        self.assertFalse(payload["ok"])
+        self.assertIn("задача не найдена", payload["error"])
+
+        job = self.add_job()
+        self.addCleanup(self.server.jobs.cancel, job["id"])
+        status, payload = self.post_json(f"/api/search/{job['id']}/continue", {})
+        self.assertEqual(status, 409)
+        self.assertIn("не на паузе", payload["error"])
+
+        # Ручную паузу, которая ещё не сработала, можно отозвать.
+        self.assertEqual(self.post_json(f"/api/search/{job['id']}/pause", {})[0], 200)
+        status, payload = self.post_json(f"/api/search/{job['id']}/continue", {})
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        self.assertIsNone(job["pause_requested"])
+
+        job["status"] = "done"
+        status, payload = self.post_json(f"/api/search/{job['id']}/pause", {})
+        self.assertEqual(status, 409)
+        self.assertIn("завершён", payload["error"])
+
+    def test_report_with_empty_filtered_list_is_rejected(self) -> None:
+        job = self.add_job(status="done", matches=[{"spu_id": 1, "sku_id": 2}])
+        with patch.object(webapp, "write_report") as write_report:
+            status, payload = self.post_json(
+                "/api/report", {"jobId": job["id"], "matches": []}
+            )
+        self.assertEqual(status, 400)
+        self.assertIn("нет результатов", payload["error"])
+        write_report.assert_not_called()
+
+    def test_report_by_keys_uses_job_rows_and_params(self) -> None:
+        rows = [
+            {"spu_id": 1, "sku_id": 10, "title": "A"},
+            {"spu_id": 2, "sku_id": 20, "title": "B"},
+        ]
+        job = self.add_job(status="done", matches=rows, brand={"name": "Nike"})
+        out_dir = self.root / "result" / "nike-26-5cm"
+        with patch.object(webapp, "write_report", return_value=out_dir) as write_report:
+            status, payload = self.post_json(
+                "/api/report",
+                {
+                    "jobId": job["id"],
+                    "keys": [{"spu_id": 2, "sku_id": 20}, {"spu_id": 1, "sku_id": 10}],
+                    # Форму поправили после поиска — в отчёт это не попадает.
+                    "size": "27",
+                    "gender": "women",
+                },
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["view"], "/result/nike-26-5cm/index.html")
+        source, meta = write_report.call_args[0]
+        self.assertEqual([row["title"] for row in source], ["B", "A"])
+        self.assertEqual(meta["size_input"], "26.5")
+        self.assertEqual(meta["gender"], "men")
+        self.assertEqual(meta["brand"], "Nike")
+
+    def test_report_keys_for_lost_job_return_404(self) -> None:
+        status, payload = self.post_json(
+            "/api/report",
+            {"jobId": "gone", "keys": [{"spu_id": 1, "sku_id": 10}]},
+        )
+        self.assertEqual(status, 404)
+        self.assertIn("задача не найдена", payload["error"])
 
     def test_hashed_assets_have_mime_and_immutable_cache(self) -> None:
         cases = (

@@ -6,7 +6,6 @@ import type {
   ClearPicksResponse,
   ConversionRequest,
   ConversionResponse,
-  HealthResponse,
   PicksResponse,
   ReportRequest,
   ReportResponse,
@@ -31,14 +30,6 @@ function apiPath(path: string): string {
 
 function resourceId(value: string): string {
   return encodeURIComponent(value)
-}
-
-export function getHealth(
-  options: ApiRequestOptions = {},
-): Promise<HealthResponse> {
-  return requestJson<HealthResponse>(apiPath('/health'), {
-    signal: options.signal,
-  })
 }
 
 export function getBrands(

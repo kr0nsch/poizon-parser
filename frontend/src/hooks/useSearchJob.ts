@@ -9,20 +9,57 @@ import {
 
 export const SEARCH_JOB_POLL_INTERVAL_MS = 1_000
 
+/** Пауза перед повторным чтением неполного финального снимка. */
+export const FINAL_SNAPSHOT_RECHECK_MS = 200
+
 export const searchJobQueryKey = (jobId: string | null | undefined) =>
   ['search-job', jobId ?? null] as const
 
-export interface UseSearchJobOptions {
-  enabled?: boolean
-  pollIntervalMs?: number
+/** 4xx: задачи на сервере нет или запрос неверен — повтор не поможет. */
+export function isPermanentPollError(error: ApiError | null): boolean {
+  return error != null && error.status >= 400 && error.status < 500
 }
 
-export function useSearchJob(
-  jobId: string | null | undefined,
-  options: UseSearchJobOptions = {},
-) {
+function wait(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason)
+      return
+    }
+    const onAbort = () => {
+      window.clearTimeout(timer)
+      reject(signal.reason)
+    }
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, ms)
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+/**
+ * Читает снимок задачи. На первом финальном статусе опрос останавливается,
+ * поэтому финальный снимок без времени завершения (старый сервер публиковал
+ * статус раньше остальных полей) дочитываем ещё один раз.
+ */
+export async function fetchSearchSnapshot(
+  jobId: string,
+  signal: AbortSignal,
+): Promise<SearchSnapshot> {
+  const snapshot = await getSearchJob(jobId, { signal })
+  if (
+    !isTerminalSearchStatus(snapshot.status) ||
+    snapshot.finished_at != null
+  ) {
+    return snapshot
+  }
+  await wait(FINAL_SNAPSHOT_RECHECK_MS, signal)
+  return getSearchJob(jobId, { signal })
+}
+
+export function useSearchJob(jobId: string | null | undefined) {
   const normalizedJobId = jobId?.trim() || null
-  const pollIntervalMs = options.pollIntervalMs ?? SEARCH_JOB_POLL_INTERVAL_MS
 
   return useQuery<SearchSnapshot, ApiError>({
     queryKey: searchJobQueryKey(normalizedJobId),
@@ -35,24 +72,23 @@ export function useSearchJob(
         })
       }
 
-      return getSearchJob(normalizedJobId, { signal })
+      return fetchSearchSnapshot(normalizedJobId, signal)
     },
-    enabled: (options.enabled ?? true) && normalizedJobId !== null,
+    enabled: normalizedJobId !== null,
     refetchInterval: (query) => {
       const snapshot = query.state.data
       if (snapshot && isTerminalSearchStatus(snapshot.status)) {
         return false
       }
-      const error = query.state.error
-      if (error && error.status >= 400 && error.status < 500) {
+      if (isPermanentPollError(query.state.error)) {
         return false
       }
 
-      return pollIntervalMs > 0 ? pollIntervalMs : false
+      return SEARCH_JOB_POLL_INTERVAL_MS
     },
     refetchIntervalInBackground: false,
     retry: (failureCount, error) => {
-      if (error.status >= 400 && error.status < 500) {
+      if (isPermanentPollError(error)) {
         return false
       }
 

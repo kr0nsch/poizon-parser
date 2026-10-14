@@ -143,10 +143,9 @@ export interface SearchSnapshot {
   idle_seconds: number
 }
 
-export type SearchJob = SearchSnapshot
-
 export interface SearchActionResponse {
   ok: boolean
+  error?: string
 }
 
 export interface PickQuery {
@@ -180,8 +179,17 @@ export interface ClearPicksResponse {
   removed: number
 }
 
+/** Строка результата в отчёте: товар и конкретный размер (SKU). */
+export interface ReportRowKey {
+  spu_id: number
+  sku_id: number
+}
+
 export interface ReportRequest {
   jobId?: string | null
+  /** Строки задачи по ключам, в нужном порядке — компактно при любом объёме. */
+  keys?: ReportRowKey[]
+  /** Строки целиком — запасной путь, когда задачи на сервере уже нет. */
   matches?: SearchMatch[]
   brand?: string
   size?: number | string
@@ -196,14 +204,9 @@ export interface ReportResponse {
   view: string
 }
 
-export interface HealthResponse {
-  status: 'ok'
-  jobs: {
-    total: number
-    active: number
-  }
-  brands_loaded: boolean
-  picks: number
+/** Ключ строки результата (как на сервере): товар + конкретный размер. */
+export function matchKey(match: ReportRowKey): string {
+  return `${match.spu_id}-${match.sku_id}`
 }
 
 export const ACTIVE_SEARCH_STATUSES = ['running', 'captcha'] as const

@@ -1,9 +1,30 @@
 """Тесты стабильности и новых фич веб-сервера."""
 
+import io
+import threading
+import time
 import unittest
+from contextlib import redirect_stdout
+from unittest.mock import MagicMock, patch
 
-from poizon_parser.webapp import JobManager, validate_search
+from poizon_parser import webapp
+from poizon_parser.webapp import (
+    JobManager,
+    ReportRequestError,
+    local_url,
+    report_meta,
+    select_report_matches,
+    validate_search,
+)
 from poizon_parser.sizechart import compare_brands, sizes_for_foot
+
+
+def add_job(manager: JobManager, **overrides) -> dict:
+    """Кладёт задачу в менеджер без запуска потока (и без сети)."""
+    job = JobManager._new_job({"brand": "nike", "size": "26.5", "scale": "CM"})
+    job.update(overrides)
+    manager._jobs[job["id"]] = job
+    return job
 
 
 class TestValidateSearch(unittest.TestCase):
@@ -86,6 +107,244 @@ class TestJobRetention(unittest.TestCase):
         manager._jobs["b"] = {"id": "b", "status": "done"}
         manager._jobs["c"] = {"id": "c", "status": "captcha"}
         self.assertEqual(manager.count(), {"total": 3, "active": 2})
+
+
+def wait_until(predicate, timeout: float = 2.0) -> bool:
+    """Ждёт условия без фиксированных пауз (поток мог ещё не стартовать)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
+class TestManualPause(unittest.TestCase):
+    """Ручная пауза: её можно отозвать, пока она не сработала."""
+
+    def setUp(self):
+        self.manager = JobManager()
+        self.job = add_job(self.manager)
+        # Отмена будит любой зависший на барьере поток, если тест упадёт.
+        self.addCleanup(self.manager.cancel, self.job["id"])
+
+    def test_resume_withdraws_pending_manual_pause(self):
+        self.assertTrue(self.manager.request_pause(self.job["id"]))
+        self.assertTrue(self.manager.snapshot(self.job["id"])["pause_requested"])
+
+        self.assertTrue(self.manager.resume(self.job["id"]))
+
+        snap = self.manager.snapshot(self.job["id"])
+        self.assertFalse(snap["pause_requested"])
+        self.assertEqual(snap["status"], "running")
+        self.assertIn("отменена", snap["log"][-1])
+
+    def test_withdrawn_pause_does_not_stop_worker(self):
+        # Воркер успел прочитать запрос паузы, но дошёл до барьера уже после
+        # отмены — вставать на паузу он не должен.
+        self.manager.request_pause(self.job["id"])
+        info = self.job["pause_requested"]
+        self.manager.resume(self.job["id"])
+
+        result = []
+        worker = threading.Thread(
+            target=lambda: result.append(self.manager._wait_for_captcha(self.job, info)),
+            daemon=True,
+        )
+        worker.start()
+        worker.join(timeout=2)
+        if worker.is_alive():  # не оставляем висящий поток при регрессии
+            self.manager.cancel(self.job["id"])
+            self.fail("воркер встал на уже отменённую паузу")
+        self.assertEqual(result, [True])
+        self.assertFalse(self.job["paused"])
+        self.assertEqual(self.job["status"], "running")
+
+    def test_resume_after_captcha_wakes_worker(self):
+        result = []
+        worker = threading.Thread(
+            target=lambda: result.append(
+                self.manager._wait_for_captcha(self.job, {"reason": "captcha", "url": "u"})
+            ),
+            daemon=True,
+        )
+        worker.start()
+        self.assertTrue(wait_until(lambda: self.job["paused"]))
+        self.assertEqual(self.job["status"], "captcha")
+
+        self.assertTrue(self.manager.resume(self.job["id"]))
+        worker.join(timeout=2)
+        self.assertEqual(result, [True])
+        self.assertEqual(self.job["status"], "running")
+
+    def test_resume_without_pause_is_rejected(self):
+        self.assertFalse(self.manager.resume(self.job["id"]))
+
+    def test_finished_job_cannot_be_resumed_or_paused(self):
+        # Отмена во время капчи: флаг paused мог остаться — статус не должен
+        # «воскреснуть» в running.
+        self.job.update(status="cancelled", paused=True)
+        self.assertFalse(self.manager.resume(self.job["id"]))
+        self.assertEqual(self.job["status"], "cancelled")
+        self.assertFalse(self.manager.request_pause(self.job["id"]))
+
+
+class _RecordingJob(dict):
+    """Задача, запоминающая порядок записи полей."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.order: list = []
+
+    def __setitem__(self, key, value):
+        self.order.append(key)
+        super().__setitem__(key, value)
+
+
+class TestFinalSnapshot(unittest.TestCase):
+    """Фронтенд перестаёт опрашивать на первом финальном статусе."""
+
+    def run_job(self, search):
+        manager = JobManager()
+        job = _RecordingJob(JobManager._new_job({"brand": "nike"}))
+        manager._jobs[job["id"]] = job
+        manager._search = search
+        manager._run(job)
+        return manager, job
+
+    def assert_status_written_last(self, job):
+        self.assertEqual(job.order[-1], "status")
+        for key in ("finished_at", "stop_reason", "activity"):
+            self.assertIn(key, job.order)
+
+    def test_done_status_is_published_after_other_fields(self):
+        manager, job = self.run_job(lambda job, params: None)
+        self.assert_status_written_last(job)
+        snap = manager.snapshot(job["id"])
+        self.assertEqual(snap["status"], "done")
+        self.assertIsNotNone(snap["finished_at"])
+        self.assertTrue(snap["stop_reason"].startswith("готово"))
+        self.assertEqual(snap["activity"], snap["stop_reason"])
+
+    def test_error_status_is_published_after_error_text(self):
+        def search(job, params):
+            raise ValueError("бренд «x» не найден")
+
+        _, job = self.run_job(search)
+        self.assert_status_written_last(job)
+        self.assertEqual(job["status"], "error")
+        self.assertEqual(job["error"], "бренд «x» не найден")
+        self.assertEqual(job["stop_reason"], "ошибка")
+
+    def test_cancel_during_pause_clears_pause_state(self):
+        from poizon_parser.client import Cancelled
+
+        def search(job, params):
+            job.update(
+                cancel=True, paused=True, status="captcha",
+                captcha={"url": "u", "reason": "captcha", "since": 0},
+                pause_requested={"reason": "manual"},
+            )
+            raise Cancelled()
+
+        manager, job = self.run_job(search)
+        snap = manager.snapshot(job["id"])
+        self.assertEqual(snap["status"], "cancelled")
+        self.assertFalse(snap["paused"])
+        self.assertIsNone(snap["captcha"])
+        self.assertFalse(snap["pause_requested"])
+
+
+class TestReportSelection(unittest.TestCase):
+    """Какие строки и параметры попадают в HTML-отчёт."""
+
+    ROWS = [
+        {"spu_id": 1, "sku_id": 10, "title": "A"},
+        {"spu_id": 2, "sku_id": 20, "title": "B"},
+        {"spu_id": 3, "sku_id": 30, "title": "C"},
+    ]
+
+    def job(self, **overrides):
+        job = JobManager._new_job(
+            {"brand": "nike", "size": "26.5", "scale": "CM", "gender": "women"}
+        )
+        job.update(matches=list(self.ROWS), brand={"name": "Nike"}, **overrides)
+        return job
+
+    def assert_rejected(self, body, job, status):
+        with self.assertRaises(ReportRequestError) as ctx:
+            select_report_matches(body, job)
+        self.assertEqual(ctx.exception.status, status)
+        return str(ctx.exception)
+
+    def test_empty_filtered_list_is_not_replaced_by_all_results(self):
+        message = self.assert_rejected({"matches": []}, self.job(), 400)
+        self.assertIn("нет результатов", message)
+
+    def test_keys_resolve_rows_from_job_in_given_order(self):
+        rows = select_report_matches(
+            {"keys": [{"spu_id": 3, "sku_id": 30}, {"spu_id": 1, "sku_id": 10}]},
+            self.job(),
+        )
+        self.assertEqual([row["title"] for row in rows], ["C", "A"])
+
+    def test_keys_without_job_ask_for_full_rows(self):
+        self.assert_rejected({"keys": [{"spu_id": 1, "sku_id": 10}]}, None, 404)
+
+    def test_unknown_key_is_conflict(self):
+        self.assert_rejected({"keys": [{"spu_id": 9, "sku_id": 99}]}, self.job(), 409)
+
+    def test_empty_or_malformed_keys_rejected(self):
+        self.assert_rejected({"keys": []}, self.job(), 400)
+        self.assert_rejected({"keys": ["1|10"]}, self.job(), 400)
+
+    def test_posted_matches_still_supported(self):
+        rows = select_report_matches({"matches": [self.ROWS[1]]}, None)
+        self.assertEqual(rows, [self.ROWS[1]])
+
+    def test_job_only_request_uses_all_results(self):
+        self.assertEqual(len(select_report_matches({}, self.job())), 3)
+        self.assertEqual(len(select_report_matches({"matches": None}, self.job())), 3)
+        self.assert_rejected({}, None, 400)
+
+    def test_meta_comes_from_job_not_from_edited_form(self):
+        meta = report_meta(
+            {"brand": "nik", "size": "27", "gender": "men", "scale": "EU"},
+            self.job(),
+        )
+        self.assertEqual(
+            meta,
+            {"brand": "Nike", "size_input": "26.5", "scale": "CM", "gender": "women"},
+        )
+
+    def test_meta_falls_back_to_body_without_job(self):
+        meta = report_meta({"brand": "Nike", "size": "27", "gender": "women"}, None)
+        self.assertEqual(
+            meta,
+            {"brand": "Nike", "size_input": "27", "scale": "CM", "gender": "women"},
+        )
+
+
+class TestRunServer(unittest.TestCase):
+    def test_wildcard_host_opens_loopback(self):
+        self.assertEqual(local_url("0.0.0.0", 8765), "http://127.0.0.1:8765/")
+        self.assertEqual(local_url("192.168.1.5", 80), "http://192.168.1.5:80/")
+
+    def test_run_server_on_all_interfaces(self):
+        app = MagicMock(server_port=8765)
+        app.serve_forever.side_effect = KeyboardInterrupt
+        out = io.StringIO()
+        with patch.object(webapp, "App", return_value=app), \
+                patch.object(webapp.threading, "Timer",
+                             side_effect=lambda _delay, fn: MagicMock(start=fn)), \
+                patch.object(webapp.webbrowser, "open") as open_browser, \
+                redirect_stdout(out):
+            webapp.run_server(host="0.0.0.0", port=8765)
+
+        open_browser.assert_called_once_with("http://127.0.0.1:8765/")
+        self.assertIn("http://127.0.0.1:8765/", out.getvalue())
+        self.assertIn("все сетевые интерфейсы", out.getvalue())
+        app.server_close.assert_called_once()
 
 
 class TestSizeCalculator(unittest.TestCase):

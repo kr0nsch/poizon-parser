@@ -4,6 +4,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 
 import { App } from './App'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import './styles/globals.css'
 import './styles/app.css'
 import './styles/motion.css'
@@ -19,13 +20,15 @@ const queryClient = new QueryClient({
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <MotionConfig
-      reducedMotion="user"
-      transition={{ type: 'spring', stiffness: 340, damping: 30 }}
-    >
-      <QueryClientProvider client={queryClient}>
-        <App />
-      </QueryClientProvider>
-    </MotionConfig>
+    <ErrorBoundary>
+      <MotionConfig
+        reducedMotion="user"
+        transition={{ type: 'spring', stiffness: 340, damping: 30 }}
+      >
+        <QueryClientProvider client={queryClient}>
+          <App />
+        </QueryClientProvider>
+      </MotionConfig>
+    </ErrorBoundary>
   </StrictMode>,
 )

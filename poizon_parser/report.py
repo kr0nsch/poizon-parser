@@ -356,7 +356,9 @@ def write_report(
 ) -> Path:
     """Пишет отчёт в result/<бренд>-<размер>-<дата>/index.html.
 
-    Возвращает путь к папке отчёта.
+    Каждый вызов получает свою папку: если за ту же секунду уже есть отчёт
+    с тем же брендом и размером, к имени добавляется -2, -3… Возвращает путь
+    к папке отчёта.
     """
     if embed_images:
         matches = _with_embedded_images(matches)
@@ -368,14 +370,31 @@ def write_report(
     stamp = time.strftime("%Y%m%d-%H%M%S")
     name = "-".join(p for p in (brand_slug, f"{size_part}cm" if size_part else "", stamp) if p)
 
-    out_dir = Path(base_dir) / name
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = _unique_dir(Path(base_dir), name)
     meta = dict(meta)
     meta.setdefault("generated_at", time.strftime("%d.%m.%Y %H:%M"))
     (out_dir / "index.html").write_text(
         build_report_html(matches, meta), encoding="utf-8"
     )
     return out_dir
+
+
+def _unique_dir(base_dir: Path, name: str) -> Path:
+    """Создаёт новую папку `name` (или `name-2`, `name-3`…) и возвращает её.
+
+    mkdir без exist_ok атомарен: два одновременных отчёта не попадут в одну
+    папку и не перезапишут index.html друг друга.
+    """
+    base_dir.mkdir(parents=True, exist_ok=True)
+    candidate = base_dir / name
+    number = 1
+    while True:
+        try:
+            candidate.mkdir()
+            return candidate
+        except FileExistsError:
+            number += 1
+            candidate = base_dir / f"{name}-{number}"
 
 
 def _with_embedded_images(matches: list[dict]) -> list[dict]:

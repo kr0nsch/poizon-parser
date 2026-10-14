@@ -12,9 +12,14 @@ import {
   motion,
   useReducedMotion,
 } from 'motion/react'
-import { useMemo, useState } from 'react'
+import { useMemo, type Dispatch, type SetStateAction } from 'react'
 
-import type { Pick, ReportResponse, SearchMatch } from '../api'
+import {
+  matchKey,
+  type Pick,
+  type ReportResponse,
+  type SearchMatch,
+} from '../api'
 import { downloadText, rowsToCsv } from '../lib/download'
 import { deliveryDays, poizonSizeLabel, slugify } from '../lib/format'
 import { EmptyState } from './EmptyState'
@@ -23,15 +28,40 @@ import { Button, Checkbox, Field, Select, Switch } from './ui'
 
 type SortMode = 'priceAsc' | 'priceDesc' | 'fastest' | 'order'
 
+/**
+ * Фильтры и сортировка результатов. Состояние живёт в App: вкладка «Итоги»
+ * размонтирует этот экран, а настройки при возврате должны остаться.
+ */
+export interface ResultsFilters {
+  sort: SortMode
+  text: string
+  maxPrice: string
+  exactOnly: boolean
+  fastOnly: boolean
+  embed: boolean
+}
+
+export const DEFAULT_RESULTS_FILTERS: ResultsFilters = {
+  sort: 'priceAsc',
+  text: '',
+  maxPrice: '',
+  exactOnly: false,
+  fastOnly: false,
+  embed: false,
+}
+
 interface ResultsViewProps {
   brand: string
+  filters: ResultsFilters
   matches: SearchMatch[]
   onCreateReport: (matches: SearchMatch[], embed: boolean) => void
+  onFiltersChange: Dispatch<SetStateAction<ResultsFilters>>
   onPick: (match: SearchMatch) => void
   picks: Pick[]
   report?: ReportResponse
   reporting: boolean
-  savingSpuId?: number
+  /** Ключи (matchKey) позиций, которые сейчас сохраняются в итоги. */
+  savingKeys: ReadonlySet<string>
 }
 
 function pickKey(match: SearchMatch): string {
@@ -45,21 +75,22 @@ function pickKey(match: SearchMatch): string {
 
 export function ResultsView({
   brand,
+  filters,
   matches,
   onCreateReport,
+  onFiltersChange,
   onPick,
   picks,
   report,
   reporting,
-  savingSpuId,
+  savingKeys,
 }: ResultsViewProps) {
   const reduceMotion = useReducedMotion()
-  const [sort, setSort] = useState<SortMode>('priceAsc')
-  const [text, setText] = useState('')
-  const [maxPrice, setMaxPrice] = useState('')
-  const [exactOnly, setExactOnly] = useState(false)
-  const [fastOnly, setFastOnly] = useState(false)
-  const [embed, setEmbed] = useState(false)
+  const { sort, text, maxPrice, exactOnly, fastOnly, embed } = filters
+
+  function update(patch: Partial<ResultsFilters>) {
+    onFiltersChange((current) => ({ ...current, ...patch }))
+  }
 
   const pickedKeys = useMemo(
     () => new Set(picks.map((pick) => pickKey(pick.match))),
@@ -101,12 +132,15 @@ export function ResultsView({
   }, [exactOnly, fastOnly, matches, maxPrice, sort, text])
 
   const filtersActive = Boolean(text || maxPrice || exactOnly || fastOnly)
+  // Пустая выборка — нечего выгружать: иначе отчёт мог бы молча взять все
+  // результаты поиска вместо отфильтрованных.
+  const nothingToExport = filtered.length === 0
+  const exportHint = nothingToExport
+    ? 'Под фильтры ничего не подошло'
+    : undefined
 
   function resetFilters() {
-    setText('')
-    setMaxPrice('')
-    setExactOnly(false)
-    setFastOnly(false)
+    update({ text: '', maxPrice: '', exactOnly: false, fastOnly: false })
   }
 
   function exportResults(kind: 'csv' | 'json') {
@@ -162,6 +196,8 @@ export function ResultsView({
             variant="system"
             loading={reporting}
             loadingLabel="Готовлю…"
+            disabled={nothingToExport}
+            title={exportHint}
             onClick={() => onCreateReport(filtered, embed)}
           >
             <FileText size={14} aria-hidden="true" />
@@ -171,11 +207,13 @@ export function ResultsView({
             label="Фото офлайн"
             title="Вшить изображения в HTML-файл"
             checked={embed}
-            onChange={(event) => setEmbed(event.target.checked)}
+            onChange={(event) => update({ embed: event.target.checked })}
           />
           <Button
             size="sm"
             variant="secondary"
+            disabled={nothingToExport}
+            title={exportHint}
             onClick={() => exportResults('csv')}
           >
             <Download size={14} aria-hidden="true" />
@@ -184,6 +222,8 @@ export function ResultsView({
           <Button
             size="sm"
             variant="secondary"
+            disabled={nothingToExport}
+            title={exportHint}
             onClick={() => exportResults('json')}
           >
             JSON
@@ -191,7 +231,9 @@ export function ResultsView({
           <Select
             aria-label="Сортировка результатов"
             value={sort}
-            onChange={(event) => setSort(event.target.value as SortMode)}
+            onChange={(event) =>
+              update({ sort: event.target.value as SortMode })
+            }
           >
             <option value="priceAsc">Сначала дешевле</option>
             <option value="priceDesc">Сначала дороже</option>
@@ -231,7 +273,7 @@ export function ResultsView({
           type="search"
           placeholder="Название модели…"
           value={text}
-          onChange={(event) => setText(event.target.value)}
+          onChange={(event) => update({ text: event.target.value })}
         />
         <Field
           aria-label="Максимальная цена"
@@ -240,17 +282,17 @@ export function ResultsView({
           min="0"
           placeholder="До, ₽"
           value={maxPrice}
-          onChange={(event) => setMaxPrice(event.target.value)}
+          onChange={(event) => update({ maxPrice: event.target.value })}
         />
         <Checkbox
           label="Точный перевод"
           checked={exactOnly}
-          onChange={(event) => setExactOnly(event.target.checked)}
+          onChange={(event) => update({ exactOnly: event.target.checked })}
         />
         <Checkbox
           label="До 10 дней"
           checked={fastOnly}
-          onChange={(event) => setFastOnly(event.target.checked)}
+          onChange={(event) => update({ fastOnly: event.target.checked })}
         />
         {filtersActive ? (
           <Button size="sm" variant="quiet" onClick={resetFilters}>
@@ -289,7 +331,7 @@ export function ResultsView({
                   layout
                   exit={{ opacity: 0, scale: 0.9 }}
                   whileTap={{ scale: 0.97 }}
-                  onClick={() => setText('')}
+                  onClick={() => update({ text: '' })}
                   aria-label={`Убрать фильтр по названию: ${text}`}
                 >
                   Название: «{text}»
@@ -304,7 +346,7 @@ export function ResultsView({
                   layout
                   exit={{ opacity: 0, scale: 0.9 }}
                   whileTap={{ scale: 0.97 }}
-                  onClick={() => setMaxPrice('')}
+                  onClick={() => update({ maxPrice: '' })}
                   aria-label={`Убрать ограничение цены до ${maxPrice} рублей`}
                 >
                   До {maxPrice} ₽
@@ -319,7 +361,7 @@ export function ResultsView({
                   layout
                   exit={{ opacity: 0, scale: 0.9 }}
                   whileTap={{ scale: 0.97 }}
-                  onClick={() => setExactOnly(false)}
+                  onClick={() => update({ exactOnly: false })}
                   aria-label="Убрать фильтр точного перевода"
                 >
                   Точный перевод
@@ -334,7 +376,7 @@ export function ResultsView({
                   layout
                   exit={{ opacity: 0, scale: 0.9 }}
                   whileTap={{ scale: 0.97 }}
-                  onClick={() => setFastOnly(false)}
+                  onClick={() => update({ fastOnly: false })}
                   aria-label="Убрать фильтр доставки до десяти дней"
                 >
                   До 10 дней
@@ -352,7 +394,7 @@ export function ResultsView({
             <AnimatePresence initial={false} mode="popLayout">
               {filtered.map((match, index) => (
                 <motion.div
-                  key={`${match.spu_id}-${match.sku_id}`}
+                  key={matchKey(match)}
                   className="product-card-slot"
                   layout="position"
                   initial={
@@ -375,7 +417,7 @@ export function ResultsView({
                   <ProductCard
                     match={match}
                     picked={pickedKeys.has(pickKey(match))}
-                    saving={savingSpuId === match.spu_id}
+                    saving={savingKeys.has(matchKey(match))}
                     onPick={onPick}
                   />
                 </motion.div>

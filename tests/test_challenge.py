@@ -1,6 +1,5 @@
 """Тесты обнаружения проверок (капчи), пауз, откатов и ограничителя частоты."""
 
-import time
 import unittest
 
 from poizon_parser.client import ChallengeRequired, PoizonClient
@@ -174,13 +173,54 @@ class TestRetryAfter(unittest.TestCase):
         self.assertIsNone(PoizonClient._retry_after(exc))
 
 
+class _FakeClock:
+    """Виртуальное время для ограничителя: sleep лишь двигает часы.
+
+    С настоящими часами проверки «прошло больше 0,1 с» зависят от загрузки
+    машины и грубого таймера Windows; виртуальные часы делают их точными.
+    """
+
+    def __init__(self) -> None:
+        import threading as th
+
+        self._now = 1000.0
+        self._lock = th.Lock()
+
+    def monotonic(self) -> float:
+        with self._lock:
+            return self._now
+
+    def sleep(self, seconds: float) -> None:
+        with self._lock:
+            self._now += max(seconds, 0.0)
+
+
 class TestRateLimiter(unittest.TestCase):
+    def setUp(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from poizon_parser import client
+
+        self.clock = _FakeClock()
+        # Подменяем часы и сон только в модуле клиента — тест не спит, а
+        # остальной процесс живёт по настоящему времени.
+        patcher = patch.object(
+            client,
+            "time",
+            SimpleNamespace(monotonic=self.clock.monotonic, sleep=self.clock.sleep),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_limits_rate_across_threads(self):
         import threading as th
 
         from poizon_parser.client import RateLimiter
 
-        limiter = RateLimiter(rate_per_sec=50.0, burst=1)
+        rate = 50.0
+        limiter = RateLimiter(rate_per_sec=rate, burst=1)
+        start = self.clock.monotonic()
         stamps: list[float] = []
         lock = th.Lock()
 
@@ -188,27 +228,27 @@ class TestRateLimiter(unittest.TestCase):
             for _ in range(4):
                 limiter.acquire()
                 with lock:
-                    stamps.append(time.monotonic())
+                    stamps.append(self.clock.monotonic())
 
         threads = [th.Thread(target=worker) for _ in range(3)]
-        start = time.monotonic()
         for t in threads:
             t.start()
         for t in threads:
-            t.join()
-        elapsed = time.monotonic() - start
-        # 12 запросов при 50/с не могут пройти мгновенно.
+            t.join(timeout=5)
         self.assertEqual(len(stamps), 12)
-        self.assertGreater(elapsed, 0.1)
+        # k-й по счёту запрос не раньше, чем через k/rate: первый из запаса
+        # burst, остальные — по одному токену на 1/rate секунды.
+        for k, stamp in enumerate(sorted(stamps)):
+            self.assertGreaterEqual(stamp - start, k / rate - 1e-9)
 
     def test_pause_for_blocks_everyone(self):
         from poizon_parser.client import RateLimiter
 
         limiter = RateLimiter(rate_per_sec=1000.0, burst=5)
+        start = self.clock.monotonic()
         limiter.pause_for(0.2)
-        start = time.monotonic()
-        limiter.acquire()
-        self.assertGreater(time.monotonic() - start, 0.15)
+        self.assertTrue(limiter.acquire())
+        self.assertGreaterEqual(self.clock.monotonic() - start, 0.2)
 
 
 if __name__ == "__main__":

@@ -25,21 +25,76 @@ export const DEFAULT_SEARCH_FORM: StoredSearchForm = {
   officialBrandsOnly: false,
 }
 
+const GENDERS: readonly StoredSearchForm['gender'][] = ['men', 'women']
+const PACES: readonly StoredSearchForm['pace'][] = ['polite', 'normal', 'fast']
+
+function oneOf<T extends string>(
+  value: unknown,
+  options: readonly T[],
+  fallback: T,
+): T {
+  return (options as readonly unknown[]).includes(value)
+    ? (value as T)
+    : fallback
+}
+
+function text(value: unknown, fallback: string): string {
+  if (typeof value === 'string') return value
+  // Число в поле ввода — безобидная старая запись, его можно сохранить.
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  return fallback
+}
+
+function digits(value: unknown, fallback: string): string {
+  const raw = text(value, fallback).trim()
+  // Мусор в глубине превращался в 0, а это «весь каталог» — долгий поиск.
+  return /^\d+$/.test(raw) ? raw : fallback
+}
+
+function price(value: unknown, fallback: string): string {
+  const raw = text(value, fallback).trim()
+  if (raw === '') return ''
+  const amount = Number(raw)
+  return Number.isFinite(amount) && amount >= 0 ? raw : fallback
+}
+
+function flag(value: unknown, fallback: boolean): boolean {
+  return typeof value === 'boolean' ? value : fallback
+}
+
+/**
+ * Приводит сохранённую форму к ожидаемым типам. localStorage может хранить
+ * что угодно (старые версии, ручные правки), а форма вызывает строковые
+ * методы прямо при отрисовке — поэтому каждое поле проверяется отдельно, и
+ * негодное заменяется значением по умолчанию, не трогая остальные.
+ */
+export function normalizeSearchForm(value: unknown): StoredSearchForm {
+  const saved: Record<string, unknown> =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {}
+  const defaults = DEFAULT_SEARCH_FORM
+
+  return {
+    brand: text(saved.brand, defaults.brand),
+    size: text(saved.size, defaults.size),
+    gender: oneOf(saved.gender, GENDERS, defaults.gender),
+    depth: digits(saved.depth, defaults.depth),
+    maxPrice: price(saved.maxPrice, defaults.maxPrice),
+    pace: oneOf(saved.pace, PACES, defaults.pace),
+    kids: flag(saved.kids, defaults.kids),
+    officialBrandsOnly: flag(
+      saved.officialBrandsOnly,
+      defaults.officialBrandsOnly,
+    ),
+  }
+}
+
 export function loadSearchForm(): StoredSearchForm {
   try {
-    const value: unknown = JSON.parse(
-      localStorage.getItem(FORM_STORAGE_KEY) ?? 'null',
+    return normalizeSearchForm(
+      JSON.parse(localStorage.getItem(FORM_STORAGE_KEY) ?? 'null'),
     )
-    if (!value || typeof value !== 'object') return DEFAULT_SEARCH_FORM
-    const saved = value as Partial<StoredSearchForm>
-    return {
-      ...DEFAULT_SEARCH_FORM,
-      ...Object.fromEntries(
-        Object.keys(DEFAULT_SEARCH_FORM)
-          .filter((key) => key in saved)
-          .map((key) => [key, saved[key as keyof StoredSearchForm]]),
-      ),
-    } as StoredSearchForm
   } catch {
     return DEFAULT_SEARCH_FORM
   }
@@ -53,6 +108,17 @@ export function saveSearchForm(form: StoredSearchForm): void {
   }
 }
 
+/** Забывает сохранённые форму и тему (итоги живут на сервере и не страдают). */
+export function resetSavedSettings(): void {
+  for (const key of [FORM_STORAGE_KEY, THEME_STORAGE_KEY]) {
+    try {
+      localStorage.removeItem(key)
+    } catch {
+      // Недоступное хранилище и так ничего не помнит.
+    }
+  }
+}
+
 export function getInitialTheme(): Theme {
   try {
     const saved = localStorage.getItem(THEME_STORAGE_KEY)
@@ -60,7 +126,8 @@ export function getInitialTheme(): Theme {
   } catch {
     // Follow the OS preference when storage is unavailable.
   }
-  return window.matchMedia('(prefers-color-scheme: dark)').matches
+  return typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-color-scheme: dark)').matches
     ? 'dark'
     : 'light'
 }

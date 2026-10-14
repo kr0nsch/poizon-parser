@@ -1,4 +1,11 @@
-import { Bookmark, Download, LoaderCircle, Trash2 } from 'lucide-react'
+import {
+  AlertTriangle,
+  Bookmark,
+  Download,
+  LoaderCircle,
+  RotateCw,
+  Trash2,
+} from 'lucide-react'
 import {
   AnimatePresence,
   LayoutGroup,
@@ -15,20 +22,28 @@ import { Button } from './ui'
 
 interface PicksViewProps {
   clearing: boolean
+  /** Итоги не загрузились: пустой список тогда не значит «пусто». */
+  error?: string
   loading: boolean
   onClear: () => void
   onRemove: (id: string) => void
+  onRetry: () => void
   picks: Pick[]
-  removingId?: string
+  /** id позиций, которые сейчас удаляются. */
+  removingIds: ReadonlySet<string>
+  retrying?: boolean
 }
 
 export function PicksView({
   clearing,
+  error,
   loading,
   onClear,
   onRemove,
+  onRetry,
   picks,
-  removingId,
+  removingIds,
+  retrying = false,
 }: PicksViewProps) {
   const reduceMotion = useReducedMotion()
   function exportJson() {
@@ -86,6 +101,34 @@ export function PicksView({
     )
   }
 
+  const retryButton = (
+    <Button
+      size="sm"
+      variant="secondary"
+      loading={retrying}
+      loadingLabel="Загружаю…"
+      onClick={onRetry}
+    >
+      <RotateCw size={14} aria-hidden="true" />
+      Повторить
+    </Button>
+  )
+
+  if (error && picks.length === 0) {
+    return (
+      <div className="empty-state" role="alert">
+        <div>
+          <span className="empty-state__icon" aria-hidden="true">
+            <AlertTriangle size={24} />
+          </span>
+          <h2>Не удалось загрузить итоги</h2>
+          <p>{error}</p>
+          <div style={{ marginTop: '0.9rem' }}>{retryButton}</div>
+        </div>
+      </div>
+    )
+  }
+
   if (picks.length === 0) {
     return (
       <EmptyState
@@ -98,6 +141,16 @@ export function PicksView({
 
   return (
     <section aria-labelledby="picks-title">
+      {error ? (
+        <div className="notice" role="alert" style={{ marginBottom: '0.8rem' }}>
+          <AlertTriangle size={17} aria-hidden="true" />
+          <span style={{ flex: 1 }}>
+            Не удалось обновить итоги — показана последняя загруженная версия.{' '}
+            {error}
+          </span>
+          {retryButton}
+        </div>
+      ) : null}
       <div className="picks-toolbar">
         <span className="picks-toolbar__count" id="picks-title">
           Сохранено позиций: <strong>{picks.length}</strong>
@@ -148,7 +201,7 @@ export function PicksView({
                 <ProductCard
                   pick={pick}
                   match={pick.match}
-                  removing={removingId === pick.id}
+                  removing={removingIds.has(pick.id)}
                   onRemove={onRemove}
                 />
               </motion.div>

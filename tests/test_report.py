@@ -183,12 +183,25 @@ class TestWriteReport(unittest.TestCase):
             self.assertEqual(out.parent.resolve(), Path(tmp).resolve())
 
     def test_separate_folders_per_call(self):
-        import time
         with tempfile.TemporaryDirectory() as tmp:
             a = write_report(MATCHES, META, base_dir=tmp)
-            time.sleep(1.05)  # имя папки содержит секунды
+            b = write_report(MATCHES, {**META, "brand": "Nike"}, base_dir=tmp)
+            c = write_report(MATCHES, META, base_dir=tmp)
+            self.assertEqual(len({a, b, c}), 3)
+            for out in (a, b, c):
+                self.assertTrue((out / "index.html").is_file())
+            self.assertIn("Nike", (b / "index.html").read_text(encoding="utf-8"))
+
+    def test_same_second_reports_get_numbered_folders(self):
+        # Два отчёта за одну секунду раньше писали в одну папку (exist_ok).
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch("poizon_parser.report.time.strftime", return_value="20260101-120000"):
+            a = write_report(MATCHES, META, base_dir=tmp)
             b = write_report(MATCHES, META, base_dir=tmp)
-            self.assertNotEqual(a.name, b.name)
+            c = write_report(MATCHES, META, base_dir=tmp)
+        self.assertEqual(a.name, "new-balance-26-2cm-20260101-120000")
+        self.assertEqual(b.name, a.name + "-2")
+        self.assertEqual(c.name, a.name + "-3")
 
 
 if __name__ == "__main__":

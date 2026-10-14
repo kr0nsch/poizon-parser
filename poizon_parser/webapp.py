@@ -16,6 +16,7 @@ import json
 import math
 import mimetypes
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -44,6 +45,9 @@ PICKS_DIR = ROOT / "data" / "picks"
 CACHE_DIR = Path(tempfile.gettempdir()) / "poizon-parser-cache"
 #: Имя cookie с анонимным идентификатором пользователя.
 UID_COOKIE = "poizon_uid"
+#: Как выглядит выданный сервером uid (uuid4().hex). Всё прочее — как без
+#: cookie: иначе мусорные значения сводились бы к общему файлу итогов.
+UID_RE = re.compile(r"[0-9a-f]{8,32}")
 
 #: Сколько строк лога держим в задаче (фронтенд показывает хвост).
 LOG_LIMIT = 300
@@ -68,10 +72,28 @@ FOOT_MIN_CM = 15.0
 FOOT_MAX_CM = 40.0
 #: Верхняя граница JSON-тела запроса. В том числе покрывает объёмный отчёт.
 MAX_JSON_BODY = 2 * 1024 * 1024
+#: Адреса «слушать все интерфейсы»: браузер по ним страницу не откроет.
+WILDCARD_HOSTS = ("0.0.0.0", "", "::")
+
+#: Тексты ответов, когда действие с задачей сейчас невозможно.
+JOB_NOT_FOUND = "задача не найдена — возможно, сервер перезапускался; запустите поиск заново"
+JOB_ACTION_CONFLICTS = {
+    "pause": "поиск уже завершён — ставить на паузу нечего",
+    "continue": "поиск не на паузе — продолжать нечего",
+}
+NO_REPORT_ROWS = "нет результатов для отчёта"
 
 
 class RequestBodyTooLarge(ValueError):
     """JSON-тело запроса превышает разрешённый размер."""
+
+
+class ReportRequestError(ValueError):
+    """Отчёт собрать нельзя: HTTP-статус и текст для пользователя."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def validate_search(body: dict) -> Optional[str]:
@@ -109,6 +131,85 @@ def validate_search(body: dict) -> Optional[str]:
             if price < 0:
                 return f"{key} не может быть отрицательной"
     return None
+
+
+# -------------------------------------------------------------------- report
+
+
+def _match_key(row: dict) -> tuple[str, str]:
+    """Ключ строки результата: товар + конкретный размер (SKU)."""
+    return str(row.get("spu_id")), str(row.get("sku_id"))
+
+
+def select_report_matches(body: dict, job: Optional[dict]) -> list[dict]:
+    """Строки для отчёта в том порядке, в каком их видит пользователь.
+
+    Источники по приоритету:
+    - `keys` (+ `jobId`) — ключи {spu_id, sku_id} отфильтрованных строк; сами
+      строки берём из задачи, так что тело запроса мало при любом числе строк;
+    - `matches` — строки целиком (запасной путь, когда задачи уже нет);
+    - только `jobId` — все результаты задачи (старые клиенты).
+
+    Пустой список — это «под фильтры ничего не подошло», а не «возьми всё»:
+    такой запрос отклоняется, а не молча подменяется всеми результатами.
+    """
+    keys = body.get("keys")
+    if keys is not None:
+        if not isinstance(keys, list) or not all(isinstance(k, dict) for k in keys):
+            raise ReportRequestError(400, "keys должен быть списком объектов {spu_id, sku_id}")
+        if not keys:
+            raise ReportRequestError(400, NO_REPORT_ROWS)
+        if job is None:
+            # Клиент ответит на 404 запасным путём — пришлёт строки целиком.
+            raise ReportRequestError(404, JOB_NOT_FOUND)
+        index: dict = {}
+        for row in list(job.get("matches") or []):
+            index.setdefault(_match_key(row), row)
+        rows = []
+        for key in keys:
+            row = index.get(_match_key(key))
+            if row is None:
+                raise ReportRequestError(
+                    409, "часть результатов не найдена в задаче — пришлите их целиком"
+                )
+            rows.append(row)
+        return rows
+
+    matches = body.get("matches")
+    if matches is not None:
+        if not isinstance(matches, list) or not all(
+            isinstance(item, dict) for item in matches
+        ):
+            raise ReportRequestError(400, "matches должен быть списком объектов")
+        if not matches:
+            raise ReportRequestError(400, NO_REPORT_ROWS)
+        return matches
+
+    rows = list((job or {}).get("matches") or [])
+    if not rows:
+        raise ReportRequestError(400, NO_REPORT_ROWS)
+    return rows
+
+
+def report_meta(body: dict, job: Optional[dict]) -> dict:
+    """Шапка отчёта — параметры того поиска, который дал результаты.
+
+    Форму в браузере могли изменить уже после поиска, поэтому значения из
+    задачи главнее присланных; присланные нужны, когда задачи уже нет.
+    """
+    params = (job or {}).get("params") or {}
+    brand = (job or {}).get("brand") or {}
+
+    def pick(*values: Any, default: str = "") -> Any:
+        return next((value for value in values if value), default)
+
+    return {
+        "brand": pick(brand.get("name"), params.get("brand"), body.get("brand")),
+        "size_input": pick(params.get("size"), body.get("size")),
+        "scale": pick(params.get("scale"), body.get("scale"), default="CM"),
+        "gender": pick(params.get("gender"), body.get("gender"), default="men"),
+    }
+
 
 # --------------------------------------------------------------------- picks
 
@@ -210,6 +311,17 @@ class JobManager:
         self._lock = threading.Lock()
 
     def create(self, params: dict) -> dict:
+        job = self._new_job(params)
+        with self._lock:
+            self._jobs[job["id"]] = job
+            self._evict_old()
+        thread = threading.Thread(target=self._run, args=(job,), daemon=True)
+        thread.start()
+        return job
+
+    @staticmethod
+    def _new_job(params: dict) -> dict:
+        """Состояние новой задачи (без запуска потока — удобно и для тестов)."""
         job = {
             "id": uuid.uuid4().hex[:12],
             "status": "running",
@@ -245,11 +357,6 @@ class JobManager:
         job["_resume_gen"] = 0
         # Счётчики обновляются из воркеров — нужен свой замок.
         job["_counter"] = threading.Lock()
-        with self._lock:
-            self._jobs[job["id"]] = job
-            self._evict_old()
-        thread = threading.Thread(target=self._run, args=(job,), daemon=True)
-        thread.start()
         return job
 
     def _evict_old(self) -> None:
@@ -285,11 +392,15 @@ class JobManager:
         job = self.get(job_id)
         if job is None:
             return None
-        snap = {
-            key: value
-            for key, value in job.items()
-            if not key.startswith("_") and key not in ("cancel", "params")
-        }
+        # Под тем же замком, что и _finish: финальный снимок не бывает
+        # «наполовину завершённым».
+        # Списки копируем: воркеры дописывают их, пока ответ сериализуется.
+        with job["_cond"]:
+            snap = {
+                key: list(value) if isinstance(value, list) else value
+                for key, value in job.items()
+                if not key.startswith("_") and key not in ("cancel", "params")
+            }
         # Секунды с последней активности считаем на сервере — не зависит от
         # рассинхрона часов браузера; по этому числу интерфейс ловит «застой».
         if job["status"] in ("running", "captcha"):
@@ -309,18 +420,32 @@ class JobManager:
         return True
 
     def resume(self, job_id: str) -> bool:
-        """Пользователь прошёл капчу — продолжаем."""
+        """Снимает паузу: пользователь прошёл проверку или передумал.
+
+        Ручная пауза встаёт только перед следующим сетевым запросом; если
+        оставшиеся карточки идут из кэша, её можно ждать бесконечно. Поэтому
+        resume отзывает и ещё не сработавший запрос паузы.
+        """
         job = self.get(job_id)
-        if job is None or not job.get("paused"):
+        if job is None:
             return False
         with job["_cond"]:
-            job["paused"] = False
-            job["captcha"] = None
-            job["pause_requested"] = None  # снимаем и ручную паузу
-            job["status"] = "running"
-            job["_resume_gen"] += 1
-            job["_cond"].notify_all()
-        self._log(job, "продолжаю после проверки")
+            if job["status"] not in ("running", "captcha"):
+                return False  # задача завершена — продолжать нечего
+            if job.get("paused"):
+                job["paused"] = False
+                job["captcha"] = None
+                job["pause_requested"] = None  # снимаем и ручную паузу
+                job["status"] = "running"
+                job["_resume_gen"] += 1
+                job["_cond"].notify_all()
+                message = "продолжаю после проверки"
+            elif job.get("pause_requested"):
+                job["pause_requested"] = None
+                message = "ручная пауза отменена — продолжаю"
+            else:
+                return False
+        self._log(job, message)
         return True
 
     def request_pause(self, job_id: str) -> bool:
@@ -330,11 +455,14 @@ class JobManager:
         завершатся. Снять паузу — resume().
         """
         job = self.get(job_id)
-        if job is None or job["status"] not in ("running", "captcha"):
+        if job is None:
             return False
-        brand = job.get("brand") or {}
-        url = "https://www.thepoizon.ru" + (brand.get("url") or "/")
-        job["pause_requested"] = {"url": url, "reason": "manual"}
+        with job["_cond"]:
+            if job["status"] not in ("running", "captcha"):
+                return False
+            brand = job.get("brand") or {}
+            url = "https://www.thepoizon.ru" + (brand.get("url") or "/")
+            job["pause_requested"] = {"url": url, "reason": "manual"}
         self._log(job, "запрошена ручная пауза — встаю после текущих запросов")
         return True
 
@@ -388,6 +516,13 @@ class JobManager:
         resume. Возвращает True (повторить запрос) или False (прекратить).
         """
         with job["_cond"]:
+            if (
+                info.get("reason") == "manual"
+                and not job["paused"]
+                and not job.get("pause_requested")
+            ):
+                # Ручную паузу отменили, пока воркер шёл к барьеру.
+                return not job["cancel"]
             first = not job["paused"]
             job["paused"] = True
             job["status"] = "captcha"
@@ -418,45 +553,62 @@ class JobManager:
 
     def _run(self, job: dict) -> None:
         params = job["params"]
+        cancelled = ("cancelled", "остановлено пользователем", "")
+        # Итог по умолчанию — на случай, если поток прервут чем-то совсем
+        # неожиданным: задача не должна навсегда остаться «running».
+        outcome = ("error", "задача прервана", "")
         try:
             self._search(job, params)
             if job["cancel"]:
-                job["status"] = "cancelled"
-                job["stop_reason"] = "остановлено пользователем"
+                outcome = cancelled
             else:
-                job["status"] = "done"
-                job["stop_reason"] = (
+                outcome = (
+                    "done",
                     f"готово: проверено {job['checked']} из {job['total']}, "
-                    f"подошло {job['found']}"
+                    f"подошло {job['found']}",
+                    "",
                 )
         except Cancelled:
-            job["status"] = "cancelled"
-            job["stop_reason"] = "остановлено пользователем"
+            outcome = cancelled
         except ChallengeRequired as exc:
             # Сюда попадаем, только если проверку не удалось пройти даже после
             # пауз и ручных попыток — воркеры уже остановлены, продолжать нечего.
             if job["cancel"]:
-                job["status"] = "cancelled"
-                job["stop_reason"] = "остановлено пользователем"
+                outcome = cancelled
             else:
-                job["status"] = "error"
-                job["stop_reason"] = f"сайт требует проверку ({exc.reason})"
-                job["error"] = (
+                outcome = (
+                    "error",
+                    f"сайт требует проверку ({exc.reason})",
                     f"Сайт настойчиво требует проверку ({exc.reason}). Откройте "
                     f"{exc.url}, пройдите её в браузере и запустите поиск снова — "
-                    "проверенные карточки уже в кэше, второй прогон будет быстрым."
+                    "проверенные карточки уже в кэше, второй прогон будет быстрым.",
                 )
         except (PoizonError, ValueError) as exc:
-            job["status"] = "error"
-            job["stop_reason"] = "ошибка"
-            job["error"] = str(exc)
+            outcome = ("error", "ошибка", str(exc))
         except Exception as exc:  # noqa: BLE001 — фон, наружу не выбросить
-            job["status"] = "error"
-            job["stop_reason"] = "внутренняя ошибка"
-            job["error"] = f"внутренняя ошибка: {exc!r}"
+            outcome = ("error", "внутренняя ошибка", f"внутренняя ошибка: {exc!r}")
         finally:
+            self._finish(job, *outcome)
+
+    @staticmethod
+    def _finish(job: dict, status: str, reason: str, error: str) -> None:
+        """Публикует итог задачи; статус — строго последним.
+
+        Фронтенд перестаёт опрашивать на первом финальном статусе, поэтому к
+        этому моменту finished_at, причина и прочие поля уже должны быть на
+        месте — иначе последний снимок остался бы неполным.
+        """
+        with job["_cond"]:
             job["finished_at"] = time.time()
-            job["activity"] = job.get("stop_reason") or "завершено"
+            job["stop_reason"] = reason
+            job["activity"] = reason or "завершено"
+            job["active_requests"] = 0
+            job["paused"] = False
+            job["captcha"] = None
+            job["pause_requested"] = None
+            if error:
+                job["error"] = error
+            job["status"] = status
 
     def _search(self, job: dict, params: dict) -> None:
         delay, workers = PACES.get(str(params.get("pace")), PACES["normal"])
@@ -612,6 +764,8 @@ class App(ThreadingHTTPServer):
 class Handler(BaseHTTPRequestHandler):
     server_version = "PoizonParser/1.0"
     server: App  # для подсказок типов
+    #: uid, выданный текущему запросу без cookie (см. _uid).
+    _issued_uid: Optional[str] = None
 
     def log_message(self, *_args: Any) -> None:  # тишина в консоли
         pass
@@ -657,9 +811,29 @@ class Handler(BaseHTTPRequestHandler):
                 return {}
         return {k: v.value for k, v in jar.items()}
 
+    def _cookie_uid(self) -> Optional[str]:
+        """uid из cookie, если он похож на выданный сервером, иначе None."""
+        value = self._cookies().get(UID_COOKIE, "")
+        return value if UID_RE.fullmatch(value) else None
+
     def _uid(self) -> str:
-        """Идентификатор пользователя из cookie (или 'anon', если её нет)."""
-        return self._cookies().get(UID_COOKIE, "anon")
+        """Идентификатор пользователя: из cookie или новый для этого запроса.
+
+        Без cookie (первый заход; в dev-режиме — несколько параллельных
+        запросов сразу) uid создаётся один раз на запрос: им же запрос и
+        обслуживается, и он же уходит в Set-Cookie. Общего «анонимного»
+        файла итогов нет — иначе первые запросы читали бы чужие позиции.
+        """
+        uid = self._cookie_uid()
+        if uid is not None:
+            return uid
+        if self._issued_uid is None:
+            self._issued_uid = uuid.uuid4().hex
+        return self._issued_uid
+
+    def _begin_request(self) -> None:
+        """Сбрасывает состояние прошлого запроса на keep-alive соединении."""
+        self._issued_uid = None
 
     def _cross_origin(self) -> bool:
         """Изменяющий запрос пришёл со страницы другого сайта (CSRF)?
@@ -694,14 +868,13 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def _send_uid_cookie_if_missing(self) -> None:
-        """Добавляет личный uid cookie, если браузер ещё не получил его."""
-        if UID_COOKIE in self._cookies():
+        """Отдаёт браузеру uid, которым обслужен этот запрос, если его нет."""
+        if self._cookie_uid() is not None:
             return
-        new_uid = uuid.uuid4().hex
         self.send_header(
             "Set-Cookie",
             (
-                f"{UID_COOKIE}={new_uid}; Path=/; HttpOnly; "
+                f"{UID_COOKIE}={self._uid()}; Path=/; HttpOnly; "
                 "Max-Age=31536000; SameSite=Lax"
             ),
         )
@@ -769,6 +942,7 @@ class Handler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------- routes
 
     def do_GET(self) -> None:  # noqa: N802 — API stdlib
+        self._begin_request()
         path = urlparse(self.path).path
         try:
             if path in ("/", "/index.html"):
@@ -854,6 +1028,7 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     def do_POST(self) -> None:  # noqa: N802
+        self._begin_request()
         path = urlparse(self.path).path
         try:
             if self._reject_cross_origin():
@@ -878,18 +1053,10 @@ class Handler(BaseHTTPRequestHandler):
                     }
                 )
                 self._json({"id": job["id"]})
-            elif path.startswith("/api/search/") and path.endswith("/cancel"):
-                job_id = path.split("/")[3]
-                ok = self.server.jobs.cancel(job_id)
-                self._json({"ok": ok}, 200 if ok else 404)
-            elif path.startswith("/api/search/") and path.endswith("/continue"):
-                job_id = path.split("/")[3]
-                ok = self.server.jobs.resume(job_id)
-                self._json({"ok": ok}, 200 if ok else 409)
-            elif path.startswith("/api/search/") and path.endswith("/pause"):
-                job_id = path.split("/")[3]
-                ok = self.server.jobs.request_pause(job_id)
-                self._json({"ok": ok}, 200 if ok else 409)
+            elif path.startswith("/api/search/") and path.endswith(
+                ("/cancel", "/continue", "/pause")
+            ):
+                self._job_action(path)
             elif path == "/api/picks":
                 body = self._body()
                 match = body.get("match")
@@ -922,32 +1089,40 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:  # noqa: BLE001
             self._internal_error()
 
+    def _job_action(self, path: str) -> None:
+        """Стоп, пауза или продолжение задачи; отказ — с понятным текстом."""
+        parts = path.split("/")  # ['', 'api', 'search', <id>, <действие>]
+        job_id, action = parts[3], parts[-1]
+        jobs = self.server.jobs
+        if len(parts) != 5 or jobs.get(job_id) is None:
+            self._json({"ok": False, "error": JOB_NOT_FOUND}, 404)
+            return
+        handlers = {
+            "cancel": jobs.cancel,
+            "pause": jobs.request_pause,
+            "continue": jobs.resume,
+        }
+        if handlers[action](job_id):
+            self._json({"ok": True})
+        else:
+            self._json(
+                {"ok": False, "error": JOB_ACTION_CONFLICTS.get(action, JOB_NOT_FOUND)},
+                409,
+            )
+
     def _make_report(self, body: dict) -> None:
         """Собирает HTML-отчёт по результатам задачи в папке result/."""
         job = None
         if body.get("jobId"):
             job = self.server.jobs.get(str(body["jobId"]))
-        # Присланные результаты приоритетнее: это то, что пользователь видит на
-        # экране (с учётом фильтра и сортировки). Задача — запасной источник.
-        source = body.get("matches") or ((job or {}).get("matches"))
-        if not source:
-            self._json({"error": "нет результатов для отчёта"}, 400)
+        try:
+            source = select_report_matches(body, job)
+        except ReportRequestError as exc:
+            self._json({"error": str(exc)}, exc.status)
             return
-        if not isinstance(source, list) or not all(
-            isinstance(item, dict) for item in source
-        ):
-            self._json({"error": "matches должен быть списком объектов"}, 400)
-            return
-
-        params = (job or {}).get("params") or {}
-        brand = (job or {}).get("brand") or {}
-        meta = {
-            "brand": body.get("brand") or brand.get("name") or params.get("brand") or "",
-            "size_input": body.get("size") or params.get("size") or "",
-            "scale": body.get("scale") or params.get("scale") or "CM",
-            "gender": body.get("gender") or params.get("gender") or "men",
-        }
-        out_dir = write_report(source, meta, embed_images=bool(body.get("embed")))
+        out_dir = write_report(
+            source, report_meta(body, job), embed_images=bool(body.get("embed"))
+        )
         rel = out_dir.name
         self._json({
             "dir": str(out_dir),
@@ -956,6 +1131,7 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     def do_DELETE(self) -> None:  # noqa: N802
+        self._begin_request()
         path = urlparse(self.path).path
         try:
             if self._reject_cross_origin():
@@ -965,7 +1141,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"removed": removed})
             elif path.startswith("/api/picks/"):
                 ok = self.server.picks.remove(self._uid(), path.rsplit("/", 1)[-1])
-                self._json({"ok": ok}, 200 if ok else 404)
+                if ok:
+                    self._json({"ok": True})
+                else:
+                    self._json(
+                        {"ok": False, "error": "позиции уже нет в итогах"}, 404
+                    )
             else:
                 self._json({"error": "не найдено"}, 404)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
@@ -974,13 +1155,26 @@ class Handler(BaseHTTPRequestHandler):
             self._internal_error()
 
 
+def local_url(host: str, port: int) -> str:
+    """Адрес интерфейса для браузера на этом же компьютере.
+
+    0.0.0.0 — «слушать всё», а не адрес: по нему браузер страницу не откроет.
+    """
+    return f"http://{'127.0.0.1' if host in WILDCARD_HOSTS else host}:{port}/"
+
+
 def run_server(
     host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True
 ) -> None:
     """Запускает сервер и (опционально) открывает браузер."""
     app = App((host, port))
-    url = f"http://{host}:{port}/"
+    url = local_url(host, app.server_port)
     print(f"Парсер POIZON: {url}  (Ctrl+C — остановить)")
+    if host in WILDCARD_HOSTS:
+        print(
+            "Сервер слушает все сетевые интерфейсы: с других устройств "
+            f"откройте http://<IP этого компьютера>:{app.server_port}/"
+        )
     if open_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     try:
