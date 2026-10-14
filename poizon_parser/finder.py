@@ -16,8 +16,11 @@ from .models import Match, Product, SearchItem
 from .sizechart import (
     CM,
     EU,
+    MM,
+    NATIVE_SCALES,
     SizeChart,
     convert_to_eu,
+    normalize_scale,
     official_charts,
     resolve_brand,
     resolve_query_scale,
@@ -34,6 +37,81 @@ def _by_price(matches: Iterable[Match]) -> list[Match]:
         matches,
         key=lambda m: m.offer.price if m.offer.price is not None else float("inf"),
     )
+
+
+def _label(value: float) -> str:
+    """26.5 → «26,5» — числа в сообщениях, как их пишут по-русски."""
+    return f"{value:g}".replace(".", ",")
+
+
+def out_of_table_message(
+    brand: str, scale: str, value: float, gender: str = "men"
+) -> Optional[str]:
+    """Почему размер заведомо не найдётся у бренда — или None, если найдётся.
+
+    Если US / UK / длина стопы вне официальной таблицы бренда, convert_to_eu
+    отказывает для любой карточки: вердикт зависит только от бренда, шкалы,
+    числа и сетки, а не от товара. Проверять это нужно до сбора каталога —
+    иначе обход загрузил бы все карточки (с глубиной 0 — весь каталог) ради
+    заведомо пустой выдачи и закончился бы безликим «ничего не найдено».
+    """
+    conversion = convert_to_eu(scale, value, None, brand=brand, gender=gender)
+    if conversion.supported:
+        return None
+    canonical = normalize_scale(scale) or scale
+    if canonical == MM:
+        canonical = CM
+    chart = resolve_brand(brand)
+    values = chart.published_values(canonical, gender) if chart is not None else []
+    unit = " см" if canonical == CM else ""
+    what = "длина стопы" if canonical == CM else canonical
+    where = ""
+    if values and values[0] <= value <= values[-1]:
+        # Размер внутри диапазона, но в пропуске сетки (у Adidas после US 15
+        # только целые): «от … до …» здесь противоречило бы само себе.
+        below = max(v for v in values if v <= value)
+        above = min(v for v in values if v >= value)
+        where = (
+            f": такого значения в ней нет, ближайшие — {what} "
+            f"{_label(below)}{unit} и {_label(above)}{unit}"
+        )
+    elif values:
+        where = f": в ней {what} от {_label(values[0])} до {_label(values[-1])}{unit}"
+    return (
+        f"{conversion.note}{where}. Проверьте размер и шкалу; если знаете свой "
+        "размер в EU, укажите его — EU сверяется с ярлыками напрямую"
+    )
+
+
+def _native_query(
+    size: str | float, scale: Optional[str]
+) -> tuple[float, Optional[str]]:
+    """Размер и шкала для find()/find_in_products(): только RU или EU.
+
+    Шкала сводится по общему правилу resolve_query_scale, как в CLI и вебе:
+    написанная в размере («EU 43») главнее выбранной. Здесь размер не
+    переводится, а сравнивается с ярлыками SKU, поэтому US / UK / CM — ошибка:
+    таких ярлыков у POIZON нет, и поиск молча ничего бы не нашёл. Разные
+    шкалы в размере и в scale — тоже ошибка, а не тихий выбор одной из них.
+    """
+    parsed_scale: Optional[str] = None
+    if isinstance(size, str):
+        parsed_scale, size_value = parse_size_query(size)
+    else:
+        size_value = float(size)
+    resolved = resolve_query_scale(parsed_scale, scale)
+    if resolved is not None and resolved not in NATIVE_SCALES:
+        raise ValueError(
+            f"на POIZON размеры подписаны только в RU и EU, а не в {resolved}. "
+            "US, UK и длину стопы переводит поиск по бренду (find_by_brand, "
+            "команда shoes)"
+        )
+    if parsed_scale and scale and resolved != normalize_scale(scale):
+        raise ValueError(
+            f"шкала в размере ({resolved}) не совпадает с выбранной "
+            f"({normalize_scale(scale)}). Оставьте одну из них"
+        )
+    return size_value, resolved
 
 
 class SizeFinder:
@@ -186,21 +264,20 @@ class SizeFinder:
         Args:
             query: ключевое слово, например «nike air force 1».
             size: искомый размер («42», «42,5», «EU 43»).
-            scale: шкала размера; None — искать в любой.
+            scale: шкала ярлыка SKU — RU или EU; None — шкала из размера,
+                а без неё любая (сначала та, что сайт показывает у модели).
             limit: сколько подходящих моделей вернуть.
             search_limit: сколько карточек проверить (по умолчанию limit * 3).
             tolerance: допуск по размеру, 0.5 захватит соседний полуразмер.
             max_price / min_price: фильтр по цене найденного размера.
             only_in_stock: пропускать размеры без предложений.
             sort_by_price: сортировать результат по цене.
+
+        Шкала из строки размера и scale сводятся по resolve_query_scale.
+        US / UK / CM (их нет на ярлыках SKU) и разные шкалы в размере и в
+        scale — ValueError до первого запроса к сайту.
         """
-        if isinstance(size, str):
-            parsed_scale, size_value = parse_size_query(size)
-            scale = scale or parsed_scale
-        else:
-            size_value = float(size)
-        if scale:
-            scale = scale.upper()
+        size_value, scale = _native_query(size, scale)
 
         to_check = search_limit or max(limit * 3, 10)
         items = self.search_items(query, limit=to_check)
@@ -327,10 +404,22 @@ class SizeFinder:
         отбрасываются.
 
         Шкала из строки размера («US W 7») и явная scale сводятся по общему
-        правилу resolve_query_scale. Если обход оборвала проверка сайта,
-        ChallengeRequired уходит наружу с находками в ``exc.partial``.
+        правилу resolve_query_scale. Размер вне официальной таблицы бренда
+        (US W 30, стопа 18 см у Nike) — ValueError с подсказкой ещё до сбора
+        каталога: ни одна карточка такой размер всё равно не пройдёт. Если
+        обход оборвала проверка сайта, ChallengeRequired уходит наружу с
+        находками в ``exc.partial``.
         """
         from .catalog import Catalog  # локальный импорт: избегаем цикла
+
+        # Размер разбираем до первого запроса: опечатка в нём — не повод
+        # грузить список брендов.
+        parsed_scale = None
+        if isinstance(size, str):
+            parsed_scale, size_value = parse_size_query(size)
+        else:
+            size_value = float(size)
+        scale = resolve_query_scale(parsed_scale, scale, default=EU)
 
         catalog = catalog or Catalog(self.client)
         found = catalog.find_brand(brand)
@@ -341,12 +430,9 @@ class SizeFinder:
                 + (f". Похожие: {hints}" if hints else "")
             )
 
-        parsed_scale = None
-        if isinstance(size, str):
-            parsed_scale, size_value = parse_size_query(size)
-        else:
-            size_value = float(size)
-        scale = resolve_query_scale(parsed_scale, scale, default=EU)
+        problem = out_of_table_message(found.name, scale, size_value, gender)
+        if problem:
+            raise ValueError(problem)
 
         depth = "весь каталог" if not check else f"до {check} моделей"
         self.on_progress(
@@ -432,7 +518,10 @@ class SizeFinder:
                 у него успели найти.
 
         Бренды, которых нет в каталоге сайта, пропускаются с сообщением
-        в прогресс, а не роняют весь обход. Проверка сайта обрывает обход:
+        в прогресс, а не роняют весь обход. Так же, но ещё до сбора их
+        каталога, пропускаются бренды, в официальную таблицу которых размер не
+        входит (out_of_table_message): on_brand для них не вызывается, как и
+        для брендов без нужной шкалы. Проверка сайта обрывает обход:
         ChallengeRequired уходит наружу, а в ``exc.partial`` — находки всех
         брендов до неё, отсортированные и обрезанные так же, как выдача.
         """
@@ -484,6 +573,10 @@ class SizeFinder:
 
         for index, chart in enumerate(charts, 1):
             self.on_progress(f"[{index}/{len(charts)}] {chart.name}")
+            problem = out_of_table_message(chart.name, scale, float(size), gender)
+            if problem:
+                self.on_progress(f"{chart.name} пропущен: {problem}")
+                continue
             try:
                 found = self.find_by_brand(
                     brand=chart.name,
@@ -677,14 +770,11 @@ class SizeFinder:
         tolerance: float = 0.0,
         only_in_stock: bool = True,
     ) -> list[Match]:
-        """То же самое, но по конкретным ссылкам или spuId, без поиска."""
-        if isinstance(size, str):
-            parsed_scale, size_value = parse_size_query(size)
-            scale = scale or parsed_scale
-        else:
-            size_value = float(size)
-        if scale:
-            scale = scale.upper()
+        """То же самое, но по конкретным ссылкам или spuId, без поиска.
+
+        Шкала проверяется так же, как в find(): только RU или EU.
+        """
+        size_value, scale = _native_query(size, scale)
 
         matches: list[Match] = []
         for target in urls:

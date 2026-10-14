@@ -13,10 +13,17 @@
 
 Для Nike, Adidas, New Balance, ASICS, Reebok и Puma перевод идёт по
 захардкоженному снимку официальных мужских и женских таблиц. Межбрендовые
-подстановки запрещены: если бренд какую-то шкалу не публикует (Puma нигде не
-даёт длину стопы), она не подставляется из чужой сетки — работает таблица
-конкретного товара, затем встроенная **эталонная лестница**
-(`_STANDARD_LADDER`); неточный перевод помечается «≈».
+подстановки запрещены: если бренд какую-то шкалу не публикует, она не
+подставляется из чужой сетки. US/UK тогда переводятся по таблице конкретного
+товара, затем по встроенной **эталонной лестнице** (`_STANDARD_LADDER`), а
+длина стопы (Puma нигде её не даёт) — по **общей сетке стопы**
+(`generic_foot_to_eu`): медиане всех официальных таблиц с замером стопы.
+Неточный перевод помечается «≈».
+
+Почему у длины стопы своя сетка. Сантиметры на ярлыке (CM/JP) и в колонке
+«Длина стопы» карточки POIZON — это маркировка пары, а не замер: у Nike ярлык
+«27 см» стоит на паре под стопу 26,2 см. Замер, сравнённый с ярлыком, давал
+размер на 1–2 EU меньше (стопа 26,5 см выходила EU 41 вместо 42–43⅓).
 
 Про «US» и «US мужской». В кроссовочном контексте «US» без уточнения — это
 **мужская** шкала (US_MEN). Женская (US_WOMEN) для той же пары примерно на 1,5
@@ -26,6 +33,7 @@
 
 from __future__ import annotations
 
+import bisect
 import json
 import statistics
 from dataclasses import dataclass, field
@@ -69,47 +77,59 @@ _ALIASES = {
 #: Эталонная лестница атлетической размерной сетки (Nike/стандарт).
 #: Каждая строка — один физический размер во всех шкалах; EU-колонка совпадает
 #: с реальным рядом EU-размеров, которым POIZON подписывает SKU.
-#: Формат строки: (EU, US_MEN, US_WOMEN, UK, CM).
-_STANDARD_LADDER: tuple[tuple[float, float, float, float, float], ...] = (
-    (35.5, 3.5, 5.0, 3.0, 22.5),
-    (36.0, 4.0, 5.5, 3.5, 23.0),
-    (36.5, 4.5, 6.0, 4.0, 23.5),
-    (37.5, 5.0, 6.5, 4.5, 24.0),
-    (38.0, 5.5, 7.0, 5.0, 24.5),
-    (38.5, 6.0, 7.5, 5.5, 24.5),
-    (39.0, 6.5, 8.0, 6.0, 25.0),
-    (40.0, 7.0, 8.5, 6.5, 25.5),
-    (40.5, 7.5, 9.0, 7.0, 26.0),
-    (41.0, 8.0, 9.5, 7.5, 26.5),
-    (42.0, 8.5, 10.0, 8.0, 27.0),
-    (42.5, 9.0, 10.5, 8.5, 27.5),
-    (43.0, 9.5, 11.0, 9.0, 28.0),
-    (44.0, 10.0, 11.5, 9.5, 28.5),
-    (44.5, 10.5, 12.0, 10.0, 29.0),
-    (45.0, 11.0, 12.5, 10.5, 29.5),
-    (45.5, 11.5, 13.0, 11.0, 30.0),
-    (46.0, 12.0, 13.5, 11.5, 30.5),
-    (47.0, 12.5, 14.0, 12.0, 31.0),
-    (47.5, 13.0, 14.5, 12.5, 31.5),
-    (48.0, 13.5, 15.0, 13.0, 32.0),
-    (48.5, 14.0, 15.5, 13.5, 32.5),
-    (49.5, 15.0, 16.5, 14.5, 33.5),
+#: Формат строки: (EU, US_MEN, US_WOMEN, UK).
+#:
+#: Колонки длины стопы здесь нет намеренно. Прежний сантиметровый ряд был
+#: ярлыком CM/JP (EU 42 = 27 см, как у Puma), и замер стопы по нему уходил на
+#: 1–2 размера вниз. Длину стопы переводит generic_foot_to_eu.
+_STANDARD_LADDER: tuple[tuple[float, float, float, float], ...] = (
+    (35.5, 3.5, 5.0, 3.0),
+    (36.0, 4.0, 5.5, 3.5),
+    (36.5, 4.5, 6.0, 4.0),
+    (37.5, 5.0, 6.5, 4.5),
+    (38.0, 5.5, 7.0, 5.0),
+    (38.5, 6.0, 7.5, 5.5),
+    (39.0, 6.5, 8.0, 6.0),
+    (40.0, 7.0, 8.5, 6.5),
+    (40.5, 7.5, 9.0, 7.0),
+    (41.0, 8.0, 9.5, 7.5),
+    (42.0, 8.5, 10.0, 8.0),
+    (42.5, 9.0, 10.5, 8.5),
+    (43.0, 9.5, 11.0, 9.0),
+    (44.0, 10.0, 11.5, 9.5),
+    (44.5, 10.5, 12.0, 10.0),
+    (45.0, 11.0, 12.5, 10.5),
+    (45.5, 11.5, 13.0, 11.0),
+    (46.0, 12.0, 13.5, 11.5),
+    (47.0, 12.5, 14.0, 12.0),
+    (47.5, 13.0, 14.5, 12.5),
+    (48.0, 13.5, 15.0, 13.0),
+    (48.5, 14.0, 15.5, 13.5),
+    (49.5, 15.0, 16.5, 14.5),
 )
 
 _LADDER_COLUMN = {
-    EU: 0, US_MEN: 1, US_WOMEN: 2, UK: 3, CM: 4,
+    EU: 0, US_MEN: 1, US_WOMEN: 2, UK: 3,
 }
 
 #: Запасные смещения — только если размер вышел за пределы эталонной лестницы.
 #: Значение прибавляется к размеру, чтобы получить EU: eu = value + offset.
+#: CM — замер стопы, и нужен он, лишь когда официальных таблиц нет вовсе:
+#: по общей сетке стопы 26,5 см — это EU 42,5.
 _FALLBACK_OFFSET = {
     EU: 0.0,
     RU: 1.0,
     UK: 32.5,
     US_MEN: 34.5,
     US_WOMEN: 33.0,
-    CM: 15.5,
+    CM: 16.0,
 }
+
+#: Сколько официальных таблиц должны покрывать замер, чтобы их медиана была
+#: общей сеткой, а не сеткой одного-двух брендов.
+_FOOT_REFERENCE_MIN_BRANDS = 3
+#: Шаг EU-размера — штих, ⅔ см: сантиметр стопы — полтора EU-размера.
+_EU_PER_CM = 1.5
 
 
 def _ladder_to_eu(scale: str, value: float) -> Optional[float]:
@@ -163,6 +183,9 @@ def resolve_query_scale(
     - в размере шкалы нет — явная, а без неё — default.
 
     Возвращает каноническое имя шкалы (см. normalize_scale) или default.
+    SizeFinder.find() и find_in_products() сравнивают размер с ярлыками SKU
+    без перевода, поэтому сверх этого правила отклоняют шкалы, кроме RU и EU,
+    и расхождение шкалы в размере с явной — как и команда find.
     """
     explicit = normalize_scale(explicit_scale)
     if parsed_scale:
@@ -232,6 +255,22 @@ class BrandChart:
         """Публикует ли бренд длину стопы (а не только ярлык в сантиметрах)."""
         return any("foot" in row for row in self.rows(gender))
 
+    @staticmethod
+    def _column(scale: str, gender: str) -> Optional[tuple[str, str]]:
+        """Шкала ввода → (сетка, колонка таблицы); US W/US M задают сетку сами."""
+        scale = normalize_scale(scale) or scale
+        if scale == CM:
+            return gender, "foot"
+        if scale == US_WOMEN:
+            return "women", "us"
+        if scale == US_MEN:
+            return "men", "us"
+        if scale == UK:
+            return gender, "uk"
+        if scale == EU:
+            return gender, "eu"
+        return None
+
     def publishes(self, scale: str, gender: str = "men") -> bool:
         """Есть ли эта шкала в официальной таблице бренда.
 
@@ -240,20 +279,31 @@ class BrandChart:
         для бренда просто не существует. Puma, например, публикует US/UK/EU,
         но нигде не даёт длину стопы.
         """
-        scale = normalize_scale(scale) or scale
-        if scale == CM:
-            return self.has_foot_column(gender)
-        if scale == US_WOMEN:
-            gender, column = "women", "us"
-        elif scale == US_MEN:
-            gender, column = "men", "us"
-        elif scale == UK:
-            column = "uk"
-        elif scale == EU:
-            column = "eu"
-        else:
-            return False
-        return any(column in row for row in self.rows(gender))
+        return self.published_range(scale, gender) is not None
+
+    def published_range(
+        self, scale: str, gender: str = "men"
+    ) -> Optional[tuple[float, float]]:
+        """Наименьшее и наибольшее значение шкалы в таблице бренда.
+
+        Для CM — длина стопы (колонку ярлыка CM/JP с ней не путаем). None —
+        шкалу бренд не публикует. Нужен, чтобы подсказать, какой размер в
+        таблице вообще есть, когда запрошенный в неё не попал.
+        """
+        values = self.published_values(scale, gender)
+        return (values[0], values[-1]) if values else None
+
+    def published_values(self, scale: str, gender: str = "men") -> list[float]:
+        """Все значения шкалы в таблице бренда, по возрастанию (пусто — нет шкалы).
+
+        Между крайними значениями бывают пропуски: у Adidas после US 15 идут
+        только целые размеры, поэтому US 15,5 в таблице нет, хотя он «внутри».
+        """
+        target = self._column(scale, gender)
+        if target is None:
+            return []
+        grid, column = target
+        return sorted({row[column] for row in self.rows(grid) if column in row})
 
     def by_foot(self, foot_cm: float, gender: str = "men") -> Optional[dict]:
         """Строка таблицы по замеру стопы.
@@ -472,11 +522,134 @@ def compare_brands(foot_cm: float, gender: str = "men") -> list[dict]:
     return out
 
 
+# ------------------------------------------------------ общая сетка стопы
+
+
+def _foot_reference(foot_cm: float, gender: str) -> Optional[float]:
+    """EU общей сетки для замера стопы или None, если таблиц мало.
+
+    Каждая официальная таблица с замером стопы даёт свой EU (ближайшая
+    строка не меньше замера — как и при поиске по бренду), общая сетка берёт
+    медиану. При чётном числе таблиц — бо́льшую из двух средних: размер, как
+    и везде, округляется вверх, и это всегда настоящий размер чьей-то сетки.
+    """
+    eus = []
+    for chart in load_brand_charts().values():
+        row = chart.by_foot(foot_cm, gender)
+        if row is not None and "eu" in row:
+            eus.append(row["eu"])
+    if len(eus) < _FOOT_REFERENCE_MIN_BRANDS:
+        return None
+    return statistics.median_high(eus)
+
+
+#: Шаг, с которым общая сетка сглаживается до неубывающей, см.
+_FOOT_REFERENCE_STEP = 0.01
+
+
+@lru_cache(maxsize=4)
+def _foot_reference_floor(gender: str) -> tuple[list[float], list[float]]:
+    """Бегущий максимум общей сетки: (стопа, наибольший EU до неё) с шагом 0,01 см.
+
+    Медиана «прыгает» вниз там, где таблица бренда начинается или
+    заканчивается (меняется набор, из которого берётся медиана), — и более
+    длинная стопа получала бы меньший размер. Бегущий максимум это убирает.
+    """
+    feet = sorted({
+        row["foot"]
+        for chart in load_brand_charts().values()
+        for row in chart.rows(gender)
+        if "foot" in row
+    })
+    if not feet:
+        return [], []
+    points, floors = [], []
+    best = float("-inf")
+    steps = int(round((feet[-1] - feet[0]) / _FOOT_REFERENCE_STEP))
+    for i in range(steps + 1):
+        foot = round(feet[0] + i * _FOOT_REFERENCE_STEP, 2)
+        eu = _foot_reference(foot, gender)
+        if eu is None:
+            continue
+        best = max(best, eu)
+        points.append(foot)
+        floors.append(best)
+    return points, floors
+
+
+def _monotone_foot_reference(foot_cm: float, gender: str) -> Optional[float]:
+    """EU общей сетки, неубывающий по длине стопы (None — таблиц мало)."""
+    eu = _foot_reference(foot_cm, gender)
+    if eu is None:
+        return None
+    points, floors = _foot_reference_floor(gender)
+    index = bisect.bisect_right(points, foot_cm + SIZE_EPSILON) - 1
+    return max(eu, floors[index]) if index >= 0 else eu
+
+
+def _foot_reference_edges(
+    gender: str,
+) -> Optional[tuple[tuple[float, float], tuple[float, float]]]:
+    """Крайние точки общей сетки: ((стопа, EU) снизу, (стопа, EU) сверху)."""
+    points, floors = _foot_reference_floor(gender)
+    if not points:
+        return None
+    return (points[0], floors[0]), (points[-1], floors[-1])
+
+
+def generic_foot_to_eu(foot_cm: float, gender: str = "men") -> Conversion:
+    """Длина стопы → EU по общей сетке — для брендов без замера в таблице.
+
+    Общая сетка строится из официальных колонок длины стопы (Nike, Adidas,
+    New Balance, ASICS, Reebok — что есть в data/size_charts.json): для
+    замера берётся EU каждой таблицы, а итог — их медиана, если замер
+    покрывают хотя бы три таблицы. Это не сетка какого-то одного бренда, и
+    официальным брендам она не подставляется: у них работает своя таблица.
+
+    Стопу за краями общей сетки (детские размеры, очень большие) оцениваем
+    от ближайшего края шагом EU-размера: ⅔ см стопы — один EU. Перевод всегда
+    неточный («≈»): у бренда без таблицы сетка своя.
+    """
+    grid = "women" if gender == "women" else "men"
+    eu = _monotone_foot_reference(foot_cm, grid)
+    if eu is not None:
+        return Conversion(
+            eu=eu,
+            exact=False,
+            source="standard",
+            note=(
+                "длина стопы переведена по общей сетке — медиане официальных "
+                "таблиц брендов с замером стопы"
+            ),
+        )
+    edges = _foot_reference_edges(grid)
+    if edges is None:
+        # Официальных таблиц нет вовсе (не собран size_charts.json).
+        return Conversion(
+            eu=foot_cm + _FALLBACK_OFFSET[CM],
+            exact=False,
+            source="fallback",
+            note="использован типовой перевод длины стопы",
+        )
+    low, high = edges
+    edge_foot, edge_eu = low if foot_cm < low[0] else high
+    return Conversion(
+        eu=round(edge_eu + (foot_cm - edge_foot) * _EU_PER_CM, 2),
+        exact=False,
+        source="fallback",
+        note="длина стопы вне общей сетки, оценка по шагу размера (⅔ см)",
+    )
+
+
 @dataclass
 class SizeChart:
     """Официальная таблица соответствия размеров конкретного товара.
 
     rows — опорные строки вида {EU: 35.5, RU: 34.5, UK: 3.0, US M: 3.5, CM: 22.5}.
+
+    CM здесь — колонка, которую сайт называет «Длина стопы», но по значениям
+    это ярлык пары: у Nike EU 35,5 там 22,5 см, а замер стопы по таблице
+    Nike — 21,6. Поэтому замер с этой колонкой не сравнивается.
     """
 
     rows: list[dict[str, float]] = field(default_factory=list)
@@ -538,6 +711,10 @@ class SizeChart:
         По опорным строкам товара смотрим, на сколько его EU расходится с
         эталоном в тех же точках, и берём медиану. Для Nike это 0, для брендов
         со сдвинутой сеткой — небольшая константа.
+
+        Для длины стопы поправка всегда 0: у лестницы нет колонки замера, а
+        «Длина стопы» товара — ярлык, и сдвиг по нему тянул бы замер обратно
+        на размер вниз.
         """
         diffs = []
         for row in self.rows:
@@ -548,8 +725,15 @@ class SizeChart:
                 diffs.append(row[EU] - ladder_eu)
         return statistics.median(diffs) if diffs else 0.0
 
-    def to_eu(self, scale: str, value: float) -> Optional[Conversion]:
-        """Переводит размер из указанной шкалы в EU."""
+    def to_eu(
+        self, scale: str, value: float, gender: str = "men"
+    ) -> Optional[Conversion]:
+        """Переводит размер из указанной шкалы в EU.
+
+        gender нужен только длине стопы: она идёт по общей сетке стопы
+        (generic_foot_to_eu) выбранной сетки, а не по колонке «Длина стопы»
+        товара — та на деле ярлык.
+        """
         scale = normalize_scale(scale) or scale
 
         if scale == EU:
@@ -561,6 +745,10 @@ class SizeChart:
             if row and EU in row:
                 return Conversion(eu=row[EU], exact=True, source="table")
             return Conversion(eu=value + 1.0, exact=True, source="native")
+        if scale == MM:
+            scale, value = CM, value / 10
+        if scale == CM:
+            return generic_foot_to_eu(value, gender)
 
         # Точное попадание в опорную строку — самый надёжный перевод.
         row = self._row_with(scale, value)
@@ -634,6 +822,11 @@ def convert_to_eu(
     2. Таблица самого товара из карточки POIZON (3 опорные строки).
     3. Эталонная атлетическая лестница.
     4. Типовое смещение.
+
+    Длина стопы без официальной колонки замера (Puma, бренды без таблицы)
+    идёт мимо пунктов 2–4: по общей сетке стопы (generic_foot_to_eu). И
+    сантиметры товара, и прежний сантиметровый ряд лестницы — ярлыки, а не
+    замер, и стопа 26,5 см по ним выходила EU 41 вместо 42–43⅓.
     """
     scale = normalize_scale(scale) or EU
     if scale == MM:
@@ -671,8 +864,11 @@ def convert_to_eu(
                 supported=False,
             )
 
+    if scale == CM:
+        return generic_foot_to_eu(value, gender)
+
     if chart is not None and chart.rows:
-        result = chart.to_eu(scale, value)
+        result = chart.to_eu(scale, value, gender)
         if result is not None:
             return result
 

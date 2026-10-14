@@ -47,6 +47,18 @@ class TestParseSize(unittest.TestCase):
     def test_fraction_not_confused_with_whole(self):
         self.assertNotEqual(parse_size("42⅓"), parse_size("42"))
 
+    def test_ascii_fraction(self):
+        # Так Adidas и американские таблицы пишут размеры: «36 2/3», «9 1/2».
+        self.assertAlmostEqual(parse_size("42 2/3"), 42 + 2 / 3, places=9)
+        self.assertEqual(parse_size("9 1/2"), 9.5)
+        self.assertAlmostEqual(parse_size("EU 36 2/3 (RU 35 2/3)"), 36 + 2 / 3)
+
+    def test_slash_that_is_not_a_size_fraction_ignored(self):
+        # Ярлыки разбираются нестрого: не дробь — просто первое число.
+        self.assertEqual(parse_size("10/2025"), 10.0)
+        self.assertEqual(parse_size("42 3/2"), 42.0)
+        self.assertEqual(parse_size("42,5 1/2"), 42.5)
+
 
 class TestParseSizeQuery(unittest.TestCase):
     def test_bare_number(self):
@@ -133,6 +145,62 @@ class TestParseSizeQuery(unittest.TestCase):
     def test_garbage_rejected(self):
         with self.assertRaises(ValueError):
             parse_size_query("большой")
+
+    def test_ascii_fraction_is_part_of_size(self):
+        # Регрессия: «EU 42 2/3» молча искало EU 42, «US 9 1/2» — US 9.
+        cases = {
+            "42 2/3": (None, 42 + 2 / 3),
+            "EU 42 2/3": ("EU", 42 + 2 / 3),
+            "US 9 1/2": ("US", 9.5),
+            "US W 7 1/2": ("US W", 7.5),
+            "EU 42 ⅔": ("EU", 42 + 2 / 3),
+        }
+        for text, (scale, value) in cases.items():
+            with self.subTest(text=text):
+                parsed_scale, parsed_value = parse_size_query(text)
+                self.assertEqual(parsed_scale, scale)
+                self.assertAlmostEqual(parsed_value, value, places=9)
+
+    def test_trailing_gender_after_bare_us(self):
+        # Регрессия: «US 7W» искало мужской US 7.
+        for text in ("US 7W", "US 7 W", "us 7w", "US 7 Ж", "US 7 жен", "US 7 women"):
+            with self.subTest(text=text):
+                self.assertEqual(parse_size_query(text), ("US W", 7.0))
+        for text in ("US 9M", "US 9 М", "US 9 муж"):
+            with self.subTest(text=text):
+                self.assertEqual(parse_size_query(text), ("US M", 9.0))
+        self.assertEqual(parse_size_query("US 7 1/2 W"), ("US W", 7.5))
+
+    def test_trailing_unit_sets_metric_scale(self):
+        self.assertEqual(parse_size_query("26,5 см"), ("CM", 26.5))
+        self.assertEqual(parse_size_query("26.5cm"), ("CM", 26.5))
+        self.assertEqual(parse_size_query("265 мм"), ("MM", 265.0))
+        self.assertEqual(parse_size_query("CM 26,5 см"), ("CM", 26.5))
+
+    def test_leftover_text_rejected(self):
+        # Раньше брался первый номер: «42-43» → 42, «4 2» → 4, «7W» → 7.
+        for text in (
+            "42-43", "4 2", "42 EU", "7W", "42,5 1/2", "42 2/3 4",
+            "US W 7 W", "EU 42 W", "42 abc", "42.5⅓",
+        ):
+            with self.subTest(text=text):
+                with self.assertRaises(ValueError) as ctx:
+                    parse_size_query(text)
+                self.assertIn("не удалось разобрать размер", str(ctx.exception))
+
+    def test_bad_fraction_rejected(self):
+        for text in ("42 3/2", "42 1/0", "42 0/3", "42 " + "1" * 5000 + "/3"):
+            with self.subTest(text=text[:12]):
+                with self.assertRaises(ValueError) as ctx:
+                    parse_size_query(text)
+                self.assertIn("не дробь размера", str(ctx.exception))
+
+    def test_two_scales_rejected(self):
+        for text in ("EU 42 см", "US 9 мм", "MM 265 cm"):
+            with self.subTest(text=text):
+                with self.assertRaises(ValueError) as ctx:
+                    parse_size_query(text)
+                self.assertIn("две шкалы", str(ctx.exception))
 
 
 class TestScalePriority(unittest.TestCase):

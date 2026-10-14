@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from . import __version__
-from .client import ChallengeRequired, PoizonClient, PoizonError
-from .finder import SizeFinder
+from .client import ChallengeRequired, PoizonClient, PoizonError, default_cache_dir
+from .finder import SizeFinder, out_of_table_message
 from .models import Match, Product
 from .sizechart import (
     CM,
@@ -355,7 +355,8 @@ def _client_from(args) -> PoizonClient:
 
 
 def _default_cache_dir() -> str:
-    return str(Path(tempfile.gettempdir()) / "poizon-parser-cache")
+    """Личная папка кэша пользователя — та же, что у веб-сервера."""
+    return str(default_cache_dir())
 
 
 def _build_finder(args) -> SizeFinder:
@@ -374,9 +375,14 @@ def _foot_size(size: str, scale: str) -> tuple[float, str]:
     (sizechart.resolve_query_scale). Неизвестная шкала не должна молча стать
     EU, а «42» без --scale EU — длиной стопы 42 см: оба случая — ValueError
     с подсказкой; отрицательный и бесконечный размер — тоже.
+
+    Если CM или MM написаны в самом размере («CM 42», «42 см»), советовать
+    --scale бесполезно: шкала из размера всё равно главнее. Тогда подсказка
+    предлагает переписать сам размер — «EU 42».
     """
     parsed_scale, value = parse_size_query(size)
     canonical = resolve_query_scale(parsed_scale, scale, default=CM)
+    in_value = parsed_scale is not None and normalize_scale(parsed_scale) == canonical
     if canonical not in INPUT_SCALES:
         # Явную --scale проверил argparse — неизвестной бывает шкала из -s.
         raise ValueError(
@@ -389,16 +395,29 @@ def _foot_size(size: str, scale: str) -> tuple[float, str]:
         if not FOOT_MIN_CM <= value <= FOOT_MAX_CM:
             # Человек сам сказал «миллиметры» — подсказки про --scale MM и EU
             # тут лишние, а границы понятнее в тех же миллиметрах.
-            hint = (
-                " Если это сантиметры — уберите MM."
-                if FOOT_MIN_CM <= millimetres <= FOOT_MAX_CM else ""
-            )
+            hint = ""
+            if FOOT_MIN_CM <= millimetres <= FOOT_MAX_CM:
+                hint = (
+                    f" Если это сантиметры — напишите «CM {_num(millimetres)}»."
+                    if in_value else " Если это сантиметры — уберите MM."
+                )
             raise ValueError(
                 f"длина стопы {_num(millimetres)} мм вне разумных границ "
                 f"({_num(FOOT_MIN_CM * 10)}–{_num(FOOT_MAX_CM * 10)} мм).{hint}"
             )
     if canonical == CM and not FOOT_MIN_CM <= value <= FOOT_MAX_CM:
-        if value > FOOT_MAX_CM * 2.5:
+        number = _num(value)
+        if in_value:
+            if value > FOOT_MAX_CM * 2.5:
+                hint = f"Если это миллиметры — напишите «MM {number}»."
+            elif value > FOOT_MAX_CM:
+                hint = f"Если это размер EU — напишите «EU {number}»."
+            else:
+                hint = (
+                    f"Если это размер US или UK — напишите «US M {number}», "
+                    f"«US W {number}» или «UK {number}»."
+                )
+        elif value > FOOT_MAX_CM * 2.5:
             hint = "Если это миллиметры — добавьте --scale MM."
         elif value > FOOT_MAX_CM:
             hint = "Если это размер EU — добавьте --scale EU."
@@ -866,6 +885,26 @@ def cmd_allbrands(args) -> int:
             f"ни у одного из выбранных брендов ({', '.join(skipped)}) нет "
             f'официальной шкалы {scale}. Укажите другую: --scale EU, UK, "US M" или "US W"'
         )
+    # Размер вне официальной таблицы бренда не найдётся ни в одной его
+    # карточке — такие бренды finder пропускает, не собирая каталог. Если
+    # пропущены все, обходить нечего: объясняем это сразу.
+    out_of_range: dict[str, str] = {}
+    for chart in wanted:
+        if chart.key in usable:
+            reason = out_of_table_message(chart.name, scale, size, args.gender)
+            if reason:
+                out_of_range[chart.name] = reason
+    requested = (
+        f"длина стопы {_num(size)} см" if scale == CM else f"размер {scale} {_num(size)}"
+    )
+    if len(skipped) + len(out_of_range) == len(wanted):
+        if len(out_of_range) == 1:
+            return _fail(next(iter(out_of_range.values())))
+        return _fail(
+            f"{requested} не входит в официальные таблицы выбранных брендов "
+            f"({', '.join(out_of_range)}). Проверьте размер и шкалу; если знаете "
+            "свой размер в EU, укажите его"
+        )
 
     problem = _output_problem(args)
     if problem:
@@ -921,6 +960,11 @@ def cmd_allbrands(args) -> int:
                 lines.append(
                     f"Без официальной шкалы {scale} и потому пропущены: "
                     + ", ".join(skipped)
+                )
+            if out_of_range:
+                lines.append(
+                    f"{requested[:1].upper()}{requested[1:]} — вне официальной таблицы, "
+                    "потому пропущены: " + ", ".join(out_of_range)
                 )
             output = _join_lines(
                 [*lines, "", render_shoes_table(matches, show_brand=True)]

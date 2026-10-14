@@ -287,6 +287,63 @@ class TestShoesSizeValidation(CliCase):
         self.assertIn("уберите MM", err)
         built.assert_not_called()
 
+    def test_hint_rewrites_size_when_scale_is_written_in_it(self):
+        # Регрессия: при «CM 42» совет «добавьте --scale EU» не помогал —
+        # шкала из размера главнее --scale, даже если она уже EU.
+        cases = [
+            (["shoes", "-b", "nike", "-s", "CM 42", "--scale", "EU"], "«EU 42»"),
+            (["shoes", "-b", "nike", "-s", "42 см"], "«EU 42»"),
+            (["allbrands", "-s", "CM 42", "--scale", "EU"], "«EU 42»"),
+            (["shoes", "-b", "nike", "-s", "CM 265", "--scale", "MM"], "«MM 265»"),
+            (["shoes", "-b", "nike", "-s", "CM 9", "--scale", "US M"], "«US M 9»"),
+            (["shoes", "-b", "nike", "-s", "MM 26,5"], "«CM 26,5»"),
+        ]
+        for argv, expected in cases:
+            with self.subTest(argv=argv):
+                built = self.no_network()
+                code, _, err = run_cli(argv)
+                self.assertEqual(code, 2)
+                self.assertIn(expected, err)
+                self.assertNotIn("--scale", err)
+                built.assert_not_called()
+
+    def test_hint_keeps_scale_flag_when_scale_came_from_flag(self):
+        built = self.no_network()
+        code, _, err = run_cli(["shoes", "-b", "nike", "-s", "9", "--scale", "CM"])
+        self.assertEqual(code, 2)
+        self.assertIn('--scale "US M"', err)
+        built.assert_not_called()
+
+    def test_fraction_and_gender_in_size_reach_finder(self):
+        # Регрессия: «EU 42 2/3» искало EU 42, «US 7W» — мужской US 7.
+        cases = [
+            (["-s", "EU 42 2/3"], 42 + 2 / 3, "EU"),
+            (["-s", "US 9 1/2"], 9.5, "US M"),
+            (["-s", "US 7W"], 7.0, "US W"),
+            (["-s", "26,5 см", "--scale", "EU"], 26.5, "CM"),
+        ]
+        for extra, size, scale in cases:
+            with self.subTest(extra=extra):
+                finder = FakeFinder()
+                with mock.patch.object(cli, "_build_finder", return_value=finder):
+                    run_cli(["shoes", "-b", "nike", *extra])
+                kwargs = finder.calls[0][1]
+                self.assertAlmostEqual(kwargs["size"], size, places=9)
+                self.assertEqual(kwargs["scale"], scale)
+
+    def test_leftover_text_in_size_rejected(self):
+        for argv in (
+            ["shoes", "-b", "nike", "-s", "42-43", "--scale", "EU"],
+            ["allbrands", "-s", "26,5 27"],
+            ["find", "-q", "nike", "-s", "42 2/3 EU"],
+        ):
+            with self.subTest(argv=argv):
+                built = self.no_network()
+                code, _, err = run_cli(argv)
+                self.assertEqual(code, 2)
+                self.assertIn("не удалось разобрать размер", err)
+                built.assert_not_called()
+
     def test_negative_size_rejected(self):
         # Регрессия: «-s -42 --scale EU» искал EU 42.
         cases = [
@@ -390,6 +447,33 @@ class TestAllbrands(CliCase):
         self.assertEqual(code, 2)
         self.assertIn("--scale EU", err)
         built.assert_not_called()
+
+    def test_size_outside_every_selected_table_fails_before_scan(self):
+        # Регрессия: обход грузил весь каталог и печатал «Ничего не найдено».
+        built = self.no_network()
+        code, _, err = run_cli(["allbrands", "-s", "18", "--brands", "nike", "adidas"])
+        self.assertEqual(code, 2)
+        self.assertIn("длина стопы 18 см не входит в официальные таблицы", err)
+        self.assertIn("Adidas, Nike", err)
+        built.assert_not_called()
+
+    def test_single_brand_outside_table_names_its_range(self):
+        built = self.no_network()
+        code, _, err = run_cli(["allbrands", "-s", "18", "--brands", "nike"])
+        self.assertEqual(code, 2)
+        self.assertIn("длина стопы от 21,6 до 37,2 см", err)
+        built.assert_not_called()
+
+    def test_brand_outside_table_listed_as_skipped(self):
+        # US W 12 есть у Nike, но не у Puma (её женская таблица — до US W 11).
+        finder = FakeFinder([make_match()])
+        self.patch_finder(finder)
+        code, out, _ = run_cli(["allbrands", "-s", "US W 12", "--brands", "nike", "puma"])
+        self.assertEqual(code, 0)
+        self.assertIn(
+            "Размер US W 12 — вне официальной таблицы, потому пропущены: Puma", out
+        )
+        self.assertEqual(finder.calls[0][1]["only"], ["nike", "puma"])
 
     def test_blank_line_between_summary_and_table(self):
         self.patch_finder(FakeFinder([make_match()]))
@@ -698,6 +782,24 @@ class TestFriendlyErrors(CliCase):
         code, _, err = run_cli(["shoes", "-b", "nike", "-s", "26,5"])
         self.assertEqual(code, 2)
         self.assertIn("не удалось разобрать ответ сайта", err)
+
+    def test_size_outside_brand_table_explained_without_catalog(self):
+        # Настоящий SizeFinder: каталог бренда не собирается, карточки не
+        # грузятся, а вместо «Ничего не найдено» — почему и что делать.
+        from poizon_parser.catalog import Brand
+
+        catalog = mock.Mock()
+        catalog.find_brand.return_value = Brand(brand_id=1, name="Puma", url="/brand/puma")
+        catalog.brand_items.side_effect = AssertionError("каталог не нужен")
+        finder = SizeFinder(client=mock.Mock(), on_progress=lambda message: None)
+        self.patch_finder(finder)
+        with mock.patch("poizon_parser.catalog.Catalog", return_value=catalog):
+            code, out, err = run_cli(["shoes", "-b", "puma", "-s", "US W 30"])
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn("Ошибка: размер вне официальной таблицы Puma", err)
+        self.assertIn("US W от 5,5 до 11", err)
+        catalog.brand_items.assert_not_called()
 
     def test_brand_not_found_still_plain_error(self):
         self.patch_finder(FakeFinder(error=ValueError("бренд «xyz» не найден")))

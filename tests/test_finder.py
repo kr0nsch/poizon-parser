@@ -157,13 +157,15 @@ class TestAdidasFractionalSizes(unittest.TestCase):
 class StubSearchFinder(SizeFinder):
     """find() / find_in_products() без сети: карточки по spuId."""
 
-    def __init__(self, errors):
-        self.errors = errors
+    def __init__(self, errors=None):
+        self.errors = errors or {}
         self.loaded = []
+        self.searched = []
         self.progress = []
         self.on_progress = self.progress.append
 
     def search_items(self, query, limit=20):
+        self.searched.append(query)
         return [
             SearchItem(spu_id=spu_id, title=f"Модель {spu_id}",
                        url=f"/product/{spu_id}")
@@ -224,6 +226,59 @@ class TestChallengeStopsSearch(unittest.TestCase):
         finder = StubSearchFinder({2: PoizonError("битая карточка")})
         matches = finder.find_in_products([1, 2, 3], "42")
         self.assertEqual([m.product.spu_id for m in matches], [1, 3])
+
+
+class TestFindScaleRule(unittest.TestCase):
+    """find() и find_in_products() сводят шкалу по resolve_query_scale.
+
+    Регрессия: явная scale перебивала шкалу из размера («EU 43» при
+    scale="RU" искало RU 43 — обувь EU 44), а «US W 7» молча не находило
+    ничего: таких ярлыков у SKU нет.
+    """
+
+    def test_scale_written_in_size_is_used(self):
+        finder = StubSearchFinder()
+        matches = finder.find("x", "EU 43")
+        self.assertEqual(
+            {(m.matched_scale, m.offer.sizes["EU"]) for m in matches},
+            {("EU", "43")},
+        )
+
+    def test_explicit_scale_any_case(self):
+        finder = StubSearchFinder()
+        matches = finder.find("x", 42, scale="ru")
+        self.assertEqual({m.matched_scale for m in matches}, {"RU"})
+        self.assertEqual({m.offer.sizes["RU"] for m in matches}, {"42"})
+        self.assertEqual(len(StubSearchFinder().find("x", "EU 43", scale="eu")), 3)
+
+    def test_conflicting_scales_rejected_before_search(self):
+        finder = StubSearchFinder()
+        with self.assertRaises(ValueError) as ctx:
+            finder.find("x", "EU 43", scale="RU")
+        self.assertIn("не совпадает", str(ctx.exception))
+        self.assertEqual((finder.searched, finder.loaded), ([], []))
+
+    def test_scales_absent_on_sku_labels_rejected(self):
+        for size, scale in (
+            ("US W 7", None), ("US 9", None), ("CM 26,5", None),
+            ("26,5 см", None), ("43", "UK"), (9.0, "US M"), ("US 9", "EU"),
+        ):
+            with self.subTest(size=size, scale=scale):
+                finder = StubSearchFinder()
+                with self.assertRaises(ValueError) as ctx:
+                    finder.find("x", size, scale=scale)
+                self.assertIn("RU и EU", str(ctx.exception))
+                self.assertEqual((finder.searched, finder.loaded), ([], []))
+
+    def test_find_in_products_uses_same_rule(self):
+        finder = StubSearchFinder()
+        with self.assertRaises(ValueError):
+            finder.find_in_products([1, 2], "EU 43", scale="RU")
+        with self.assertRaises(ValueError):
+            finder.find_in_products([1, 2], "US W 7")
+        self.assertEqual(finder.loaded, [])
+        matches = finder.find_in_products([1], "EU 43")
+        self.assertEqual(matches[0].matched_scale, "EU")
 
 
 class TestCalcSign(unittest.TestCase):

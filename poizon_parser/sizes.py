@@ -28,8 +28,29 @@ _FRACTIONS = {
     "⅘": 0.8, "⅚": 5 / 6, "⅞": 0.875,
 }
 
+_FRACTION_CHARS = "".join(_FRACTIONS)
+
+# Число, за которым может идти дробь: символом («42⅔») или через косую черту
+# («42 2/3», «9 1/2») — так Adidas и американские таблицы пишут размеры.
+# Группы: число, символ дроби, числитель, знаменатель.
 _NUM_RE = re.compile(
-    r"(\d+(?:[.,]\d+)?)\s*([" + "".join(_FRACTIONS) + r"])?"
+    r"(\d+(?:[.,]\d+)?)"
+    r"(?:\s*([" + _FRACTION_CHARS + r"])|\s+(\d+)/(\d+)(?![\d/]))?"
+)
+
+# Значение в пользовательском вводе разбирается целиком, без «хвостов»:
+# дробь — только после целого числа, «42,5 1/2» и «42-43» не размер.
+_QUERY_NUMBER_RE = re.compile(
+    r"(?P<whole>\d+)(?:\s*(?P<char>[" + _FRACTION_CHARS + r"])"
+    r"|\s+(?P<num>\d+)/(?P<den>\d+))"
+    r"|(?P<plain>\d+(?:[.,]\d+)?)"
+    r"|(?P<bare>[" + _FRACTION_CHARS + r"])"
+)
+# После числа допустима единица длины: «26,5 см», «265 mm».
+_UNIT_SUFFIX_RE = re.compile(r"^(?:CM|MM|СМ|ММ)\.?$", re.IGNORECASE)
+# …и пол после голого «US»: «US 7W», «US 7 W», «US 9 муж».
+_GENDER_SUFFIX_RE = re.compile(
+    r"^(?:W|M|Ж|М|WOMEN|MEN|ЖЕН[А-ЯЁ]*|МУЖ[А-ЯЁ]*)\.?$", re.IGNORECASE
 )
 # «US W» / «US M» и метрические шкалы проверяются раньше голого «US»: иначе
 # «US W 7» разбиралось бы как «US» + «W 7» и превращалось в мужской US 7.
@@ -57,8 +78,27 @@ def _canonical_scale(prefix: str) -> str:
     return _METRIC_PREFIXES.get(key, key)
 
 
+def _proper_fraction(numerator: str, denominator: str) -> Optional[float]:
+    """«2», «3» → 0.667. None, если это не правильная дробь (3/2, 0/3, 1/0).
+
+    Дроби размеров короткие: длинные цифры — не дробь, да и int() на тысячах
+    цифр упал бы с собственной ошибкой.
+    """
+    if len(numerator) > 3 or len(denominator) > 3:
+        return None
+    top, bottom = int(numerator), int(denominator)
+    if not 0 < top < bottom:
+        return None
+    return top / bottom
+
+
 def parse_size(text: str | float | int | None) -> Optional[float]:
-    """«42,5» → 42.5, «42⅓» → 42.33. None, если числа в строке нет."""
+    """«42,5» → 42.5, «42⅓» и «42 1/3» → 42.33. None, если числа нет.
+
+    Разбор нестрогий — для ярлыков SKU и таблиц сайта: берётся первое число
+    строки, остальное («RU (39,5 EU)») не мешает. Пользовательский ввод
+    разбирает строгий parse_size_query.
+    """
     if text is None:
         return None
     if isinstance(text, (int, float)):
@@ -72,26 +112,63 @@ def parse_size(text: str | float | int | None) -> Optional[float]:
     match = _NUM_RE.search(raw)
     if not match:
         return None
+    number, char, numerator, denominator = match.groups()
     try:
-        value = float(match.group(1).replace(",", "."))
+        value = float(number.replace(",", "."))
     except ValueError:
         return None
-    if match.group(2):
-        value += _FRACTIONS[match.group(2)]
+    if char:
+        value += _FRACTIONS[char]
+    elif numerator and number.isdigit():
+        # «42 2/3» — дробь только у целого числа; «10/2025» дробью не считаем.
+        fraction = _proper_fraction(numerator, denominator)
+        if fraction is not None:
+            value += fraction
     return value
+
+
+def _query_value(text: str, raw: str) -> tuple[float, str]:
+    """Число в начале ввода и всё, что осталось после него."""
+    match = _QUERY_NUMBER_RE.match(raw)
+    if not match:
+        raise ValueError(f"не удалось разобрать размер: {text!r}")
+    if match.group("bare"):
+        value = _FRACTIONS[match.group("bare")]
+    elif match.group("plain"):
+        value = float(match.group("plain").replace(",", "."))
+    else:
+        value = float(match.group("whole"))
+        if match.group("char"):
+            value += _FRACTIONS[match.group("char")]
+        else:
+            fraction = _proper_fraction(match.group("num"), match.group("den"))
+            if fraction is None:
+                raise ValueError(
+                    f"не удалось разобрать размер: {text!r} — "
+                    f"«{match.group('num')}/{match.group('den')}» не дробь "
+                    "размера (нужна вида «1/2», «2/3»)"
+                )
+            value += fraction
+    return value, raw[match.end():].strip()
 
 
 def parse_size_query(text: str) -> tuple[Optional[str], float]:
     """Разбирает пользовательский ввод размера.
 
-    Поддерживает «42», «42,5», «RU42», «EU 43», «US 9.5», «US W 7», «usm 9»,
-    «CM 26,5», «MM 265». Возвращает (шкала или None, число); шкалы с полом и
-    метрические приходят в виде, понятном ``sizechart.normalize_scale``:
-    «US W», «US M», «CM», «MM». Голое «US» остаётся «US» — пол в нём не задан.
+    Поддерживает «42», «42,5», «42⅔», «42 2/3», «RU42», «EU 43», «US 9.5»,
+    «US 9 1/2», «US W 7», «US 7W», «usm 9», «CM 26,5», «26,5 см», «MM 265».
+    Возвращает (шкала или None, число); шкалы с полом и метрические приходят
+    в виде, понятном ``sizechart.normalize_scale``: «US W», «US M», «CM»,
+    «MM». Голое «US» остаётся «US» — пол в нём не задан.
+
+    Строка разбирается целиком: всё, что не размер, — ValueError. Раньше
+    брался первый номер, и «42 2/3» молча превращалось в 42, «US 7W» — в
+    мужской US 7, а «42-43» — в 42. Пол после числа понятен только после
+    голого «US»: «7W» без шкалы может значить и полноту.
 
     Отрицательный размер («-42») и число, которое не помещается во float
-    (сотни цифр подряд дают inf), — ValueError: иначе знак молча терялся бы,
-    а inf ронял бы вывод.
+    (сотни цифр подряд дают inf), — тоже ValueError: иначе знак молча
+    терялся бы, а inf ронял бы вывод.
     """
     raw = str(text).strip()
     if not raw:
@@ -106,14 +183,31 @@ def parse_size_query(text: str) -> tuple[Optional[str], float]:
         if separator == "-" and space_before and not space_after:
             raise ValueError("размер должен быть больше нуля")
 
-    # parse_size ищет число внутри строки и знак перед ним не видит.
+    # Знак перед числом регулярное выражение числа не пропустит — ловим его
+    # отдельно, чтобы сообщение было про знак, а не «не удалось разобрать».
     if raw.startswith(_MINUS_SIGNS):
         raise ValueError("размер должен быть больше нуля")
-    value = parse_size(raw)
-    if value is None:
-        raise ValueError(f"не удалось разобрать размер: {text!r}")
+    value, tail = _query_value(text, raw)
     if not math.isfinite(value):
         raise ValueError("не удалось разобрать размер: слишком большое число")
+
+    if tail:
+        if _UNIT_SUFFIX_RE.match(tail):
+            unit = _canonical_scale(tail.rstrip("."))
+            if scale is not None and scale != unit:
+                raise ValueError(
+                    f"в размере {text!r} две шкалы: {scale} и {unit}. "
+                    "Оставьте одну"
+                )
+            scale = unit
+        elif scale == "US" and _GENDER_SUFFIX_RE.match(tail):
+            scale = _canonical_scale("US" + tail)
+        else:
+            raise ValueError(
+                f"не удалось разобрать размер: {text!r} — лишнее «{tail}» после "
+                "числа. Нужен один размер: «42», «42,5», «42⅔», «42 2/3», "
+                "со шкалой — «EU 42», «US W 7»"
+            )
     return scale, value
 
 

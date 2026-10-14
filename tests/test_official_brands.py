@@ -231,6 +231,114 @@ class TestFindByBrandScale(unittest.TestCase):
         self.assertIn("Puma", {name for name, _ in seen})
 
 
+class CountingCatalog(FakeCatalog):
+    """Запоминает, каталог каких брендов собирали."""
+
+    def __init__(self, prices):
+        super().__init__(prices)
+        self.collected: list[str] = []
+
+    def brand_items(self, brand, max_items=None, include_kids=False):
+        self.collected.append(brand.name)
+        return super().brand_items(brand, max_items, include_kids)
+
+
+class CountingFinder(StubFinder):
+    """Запоминает загруженные карточки и сообщения прогресса."""
+
+    def __init__(self, catalog):
+        super().__init__(catalog)
+        self.loaded: list[int] = []
+        self.progress: list[str] = []
+        self.on_progress = self.progress.append
+
+    def load_product(self, item):
+        self.loaded.append(item.spu_id)
+        return super().load_product(item)
+
+
+class TestSizeOutsideOfficialTable(unittest.TestCase):
+    """Размер вне официальной таблицы бренда не найдётся ни в одной карточке.
+
+    Регрессия: обход всё равно собирал каталог и грузил каждую карточку (с
+    --check 0 — весь каталог), а в конце печатал лишь «Ничего не найдено».
+    """
+
+    def setUp(self):
+        self.catalog = CountingCatalog(PRICES)
+        self.finder = CountingFinder(self.catalog)
+
+    def test_find_by_brand_fails_before_collecting_catalog(self):
+        with self.assertRaises(ValueError) as ctx:
+            self.finder.find_by_brand(
+                "Puma", size="US W 30", scale=CM, catalog=self.catalog
+            )
+        message = str(ctx.exception)
+        self.assertIn("вне официальной таблицы Puma (женская сетка)", message)
+        self.assertIn("US W от 5,5 до 11", message)
+        self.assertIn("EU", message)  # подсказка, как искать иначе
+        self.assertEqual(self.catalog.collected, [])
+        self.assertEqual(self.finder.loaded, [])
+
+    def test_foot_outside_table_names_the_range(self):
+        with self.assertRaises(ValueError) as ctx:
+            self.finder.find_by_brand(
+                "Nike", size=18.0, scale=CM, catalog=self.catalog
+            )
+        self.assertIn("длина стопы от 21,6 до 37,2 см", str(ctx.exception))
+        self.assertEqual(self.catalog.collected, [])
+        self.assertEqual(self.finder.loaded, [])
+
+    def test_gap_inside_table_names_neighbours_not_range(self):
+        # У Adidas после US 15 только целые размеры: US 15,5 «внутри» диапазона,
+        # но строки нет. «от 4 до 20» противоречило бы «вне таблицы».
+        with self.assertRaises(ValueError) as ctx:
+            self.finder.find_by_brand(
+                "Adidas", size="US M 15.5", scale=CM, catalog=self.catalog
+            )
+        message = str(ctx.exception)
+        self.assertIn("ближайшие — US M 15 и 16", message)
+        self.assertNotIn(" от ", message)
+        self.assertEqual(self.finder.loaded, [])
+
+    def test_size_inside_table_still_scanned(self):
+        matches = self.finder.find_by_brand(
+            "Nike", size="26,2", scale=CM, catalog=self.catalog
+        )
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(self.catalog.collected, ["Nike"])
+
+    def test_all_brands_skip_brand_outside_its_table(self):
+        # US W 12: у Puma женская таблица кончается на US W 11, у остальных
+        # она длиннее — Puma пропускается без сбора каталога и загрузок.
+        seen = []
+        self.finder.find_in_official_brands(
+            size="US W 12", scale=CM, catalog=self.catalog,
+            on_brand=lambda name, found: seen.append(name),
+        )
+        self.assertNotIn("Puma", seen)
+        self.assertEqual(len(seen), 5)
+        self.assertNotIn("Puma", self.catalog.requested)
+        self.assertNotIn("Puma", self.catalog.collected)
+        self.assertTrue(
+            any(
+                line.startswith("Puma пропущен") and "US W от 5,5 до 11" in line
+                for line in self.finder.progress
+            ),
+            self.finder.progress,
+        )
+
+    def test_all_brands_nothing_to_scan(self):
+        seen = []
+        matches = self.finder.find_in_official_brands(
+            size=18.0, scale=CM, catalog=self.catalog,
+            on_brand=lambda name, found: seen.append(name),
+        )
+        self.assertEqual((matches, seen), ([], []))
+        self.assertEqual(self.catalog.requested, [])
+        self.assertEqual(self.finder.loaded, [])
+
+
 class ChallengeCatalog(FakeCatalog):
     """У каждого бренда несколько карточек: spu = номер бренда * 10 + i."""
 

@@ -14,6 +14,7 @@ from poizon_parser.sizechart import (
     US_WOMEN,
     SizeChart,
     convert_to_eu,
+    generic_foot_to_eu,
     normalize_scale,
     resolve_query_scale,
 )
@@ -153,8 +154,16 @@ class TestConversion(unittest.TestCase):
         self.assertEqual(women, 45.5)
         self.assertNotEqual(men, women)
 
-    def test_cm_conversion(self):
-        self.assertEqual(self.chart.to_eu(CM, 23.0).eu, 36.0)
+    def test_foot_length_not_matched_against_product_label(self):
+        # «Длина стопы» карточки (23 см у EU 36) — ярлык Nike CM/JP: стопа
+        # 23 см по таблице Nike — уже EU 38. Замер идёт по общей сетке стопы.
+        result = self.chart.to_eu(CM, 23.0)
+        self.assertEqual((result.eu, result.source), (37.5, "standard"))
+        self.assertFalse(result.exact)
+        self.assertEqual(self.chart.ladder_correction(CM), 0.0)
+
+    def test_millimetres_go_through_foot_reference(self):
+        self.assertEqual(self.chart.to_eu(MM, 230.0).eu, 37.5)
 
     def test_offset_is_median(self):
         self.assertEqual(self.chart.offset_to_eu(US_MEN), 32.0)
@@ -226,6 +235,61 @@ class TestFallbackConversion(unittest.TestCase):
 
     def test_ru_without_chart(self):
         self.assertEqual(convert_to_eu(RU, 41.0, None).eu, 42.0)
+
+
+class TestGenericFootReference(unittest.TestCase):
+    """Общая сетка стопы: замер не сравнивается с сантиметрами ярлыка."""
+
+    def test_median_of_official_foot_tables(self):
+        # Стопа 26,5 см: NB/ASICS EU 42, Reebok 42,5, Nike 43, Adidas 43⅓.
+        result = generic_foot_to_eu(26.5)
+        self.assertEqual((result.eu, result.source), (42.5, "standard"))
+        self.assertFalse(result.exact)
+        self.assertIn("общей сетке", result.note)
+
+    def test_even_count_rounds_up_to_real_size(self):
+        # 33,5 см покрывают четыре мужские таблицы: 51, 52,5, 53, 53⅓ —
+        # берётся 53, а не среднее 52,75, которого нет ни в одной сетке.
+        self.assertEqual(generic_foot_to_eu(33.5).eu, 53.0)
+
+    def test_women_grid_is_used_for_women(self):
+        # 29,5 см: женские таблицы дают 45, 46,5, 47, 48 → 47.
+        self.assertEqual(generic_foot_to_eu(29.5, "women").eu, 47.0)
+        self.assertEqual(generic_foot_to_eu(29.5, "men").eu, 47.0)
+        # А вот 32,5 см у женской сетки покрывают лишь две таблицы.
+        self.assertEqual(generic_foot_to_eu(32.5, "men").source, "standard")
+        self.assertEqual(generic_foot_to_eu(32.5, "women").source, "fallback")
+
+    def test_kids_foot_extrapolated_by_size_step(self):
+        # Ниже общей сетки — от её края шагом ⅔ см на размер: 18 см ≈ EU 30.
+        result = generic_foot_to_eu(18.0)
+        self.assertEqual(result.source, "fallback")
+        self.assertFalse(result.exact)
+        self.assertGreater(result.eu, 29.0)
+        self.assertLess(result.eu, 31.0)
+
+    def test_grows_with_foot(self):
+        # Шаг 0,01 см: медиана «прыгала» вниз там, где таблица бренда
+        # начинается или кончается (22,49 → 22,5 и 34,5 → 34,51 см).
+        feet = [round(15 + step * 0.01, 2) for step in range(2501)]
+        for gender in ("men", "women"):
+            eus = [generic_foot_to_eu(foot, gender).eu for foot in feet]
+            drops = [
+                (feet[i], eus[i], eus[i + 1])
+                for i in range(len(eus) - 1)
+                if eus[i + 1] < eus[i] - 1e-9
+            ]
+            self.assertEqual(drops, [], gender)
+
+    def test_boundary_points_do_not_shrink(self):
+        for gender, lower, upper in (
+            ("men", 22.49, 22.5), ("men", 34.5, 34.6), ("women", 22.49, 22.5),
+        ):
+            with self.subTest(gender=gender, lower=lower):
+                self.assertGreaterEqual(
+                    generic_foot_to_eu(upper, gender).eu,
+                    generic_foot_to_eu(lower, gender).eu,
+                )
 
 
 class TestRealFixture(unittest.TestCase):

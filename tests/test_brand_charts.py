@@ -9,6 +9,7 @@ from poizon_parser.sizechart import (
     UK,
     US_MEN,
     US_WOMEN,
+    SizeChart,
     convert_to_eu,
     load_brand_charts,
     resolve_brand,
@@ -345,6 +346,51 @@ class TestFallbacks(unittest.TestCase):
         result = convert_to_eu(CM, 26.2, None, brand="Puma")
         self.assertTrue(result.supported)
         self.assertEqual(result.source, "standard")
+
+    def test_foot_without_official_column_lands_in_official_range(self):
+        # Регрессия: замер искался в сантиметрах ярлыка, и стопа 26,5 см у
+        # Puma, Vans и брендов без таблицы выходила EU 41, хотя все
+        # официальные таблицы дают ей EU 42–43⅓.
+        official = [
+            convert_to_eu(CM, 26.5, None, brand=name).eu
+            for name in ("Nike", "Adidas", "New Balance", "ASICS", "Reebok")
+        ]
+        low, high = min(official), max(official)
+        self.assertEqual((low, round(high, 2)), (42.0, 43.33))
+        for brand in ("Puma", "Vans", None):
+            with self.subTest(brand=brand):
+                result = convert_to_eu(CM, 26.5, None, brand=brand)
+                self.assertTrue(low <= result.eu <= high, result.eu)
+                self.assertFalse(result.exact)  # в выдаче — «≈»
+                self.assertTrue(result.supported)
+                self.assertEqual(result.brand, "")  # чужая сетка не названа
+
+    def test_foot_reference_ignores_product_label_column(self):
+        # «Длина стопы» карточки — ярлык (у Nike 27 см стоит на EU 42):
+        # с таблицей товара стопа 27 см не должна снова съехать в EU 42.
+        label_rows = SizeChart(rows=[
+            {EU: 41.0, CM: 26.5}, {EU: 42.0, CM: 27.0}, {EU: 42.5, CM: 27.5},
+        ])
+        for brand in ("Puma", "Vans"):
+            with self.subTest(brand=brand):
+                result = convert_to_eu(CM, 27.0, label_rows, brand=brand)
+                self.assertEqual((result.eu, result.source), (43.0, "standard"))
+
+    def test_foot_reference_follows_gender(self):
+        men = convert_to_eu(CM, 29.5, None, brand="Puma", gender="men")
+        women = convert_to_eu(CM, 32.5, None, brand="Puma", gender="women")
+        self.assertEqual(men.source, "standard")
+        # Женские таблицы с замером стопы кончаются раньше мужских.
+        self.assertEqual(women.source, "fallback")
+        self.assertTrue(women.supported)
+
+    def test_official_foot_conversions_unchanged(self):
+        # Общая сетка не трогает бренды с собственным замером стопы.
+        for brand in ("Nike", "Adidas", "New Balance", "ASICS", "Reebok"):
+            with self.subTest(brand=brand):
+                result = convert_to_eu(CM, 26.5, None, brand=brand)
+                self.assertEqual(result.source, "brand")
+                self.assertEqual(result.brand, brand)
 
     def test_eu_passthrough_even_with_brand(self):
         result = convert_to_eu(EU, 42.0, None, brand="Nike")
