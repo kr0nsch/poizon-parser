@@ -39,6 +39,19 @@ def _shorten(text: str, width: int) -> str:
     return text if len(text) <= width else text[: width - 1] + "…"
 
 
+def _models(count: int) -> str:
+    """«1 модель» / «2 модели» / «5 моделей»."""
+    tail = count % 100
+    if 11 <= tail <= 14:
+        return f"{count} моделей"
+    last = count % 10
+    if last == 1:
+        return f"{count} модель"
+    if 2 <= last <= 4:
+        return f"{count} модели"
+    return f"{count} моделей"
+
+
 def _fit_hint(size_tip: str) -> str:
     """«Размер больше, возьмите размер -0,5» → «-0,5»."""
     if not size_tip:
@@ -288,8 +301,14 @@ def cmd_sizes(args) -> int:
     return 0
 
 
-def render_shoes_table(matches: list[Match], title_width: int = 44) -> str:
-    """Итоговая таблица основного сценария: бренд + размер → что в наличии."""
+def render_shoes_table(
+    matches: list[Match], title_width: int = 44, show_brand: bool = False
+) -> str:
+    """Итоговая таблица основного сценария: бренд + размер → что в наличии.
+
+    show_brand добавляет колонку бренда — она нужна, когда в одной выдаче
+    лежат модели нескольких брендов (обход всех официальных таблиц).
+    """
     if not matches:
         return "Ничего не найдено."
 
@@ -303,6 +322,7 @@ def render_shoes_table(matches: list[Match], title_width: int = 44) -> str:
         rows.append(
             (
                 str(index),
+                *([_shorten(match.product.brand or "—", 14)] if show_brand else []),
                 _shorten(match.product.title, title_width),
                 poizon_label,
                 _fit_hint(match.product.size_tip),
@@ -313,7 +333,11 @@ def render_shoes_table(matches: list[Match], title_width: int = 44) -> str:
             )
         )
 
-    headers = ("#", "Модель", "Размер на POIZON", "Посадка", "Цена", "Доставка", "SPU")
+    headers = (
+        "#",
+        *(("Бренд",) if show_brand else ()),
+        "Модель", "Размер на POIZON", "Посадка", "Цена", "Доставка", "SPU",
+    )
     widths = [
         max(len(headers[col]), max(len(row[col]) for row in rows))
         for col in range(len(headers))
@@ -342,6 +366,9 @@ def render_shoes_table(matches: list[Match], title_width: int = 44) -> str:
         out.append(f"Запрошено: {first.requested_size:g} {first.requested_scale} → {shown}")
         if len(converted) > 1:
             out.append(
+                "  Разный EU — это не ошибка: у каждого бренда своя официальная "
+                "сетка, перевод берётся из неё."
+                if show_brand else
                 "  Разный EU у моделей — это не ошибка: у каждой свой размерный "
                 "ряд (мужской/женский), перевод берётся из её таблицы."
             )
@@ -449,6 +476,86 @@ def cmd_shoes(args) -> int:
     return 0 if matches else 1
 
 
+def cmd_allbrands(args) -> int:
+    """Один размер → обувь всех брендов с официальной таблицей."""
+    from .sizechart import CM, normalize_scale, official_charts
+
+    finder = _build_finder(args)
+    per_brand: list[tuple[str, list[Match]]] = []
+    try:
+        matches = finder.find_in_official_brands(
+            size=args.size,
+            scale=args.scale,
+            limit=args.limit,
+            total_limit=args.total or None,
+            check=args.check or None,  # 0 → весь каталог
+            tolerance=args.tolerance,
+            max_price=args.max_price,
+            min_price=args.min_price,
+            include_kids=args.kids,
+            workers=args.workers,
+            gender=args.gender,
+            only=args.brands or None,
+            on_brand=lambda name, found: per_brand.append((name, found)),
+        )
+    except ValueError as exc:
+        print(f"Ошибка: {exc}", file=sys.stderr)
+        return 2
+
+    if args.format == "html":
+        if not matches:
+            print("Ничего не найдено — отчёт не создан.", file=sys.stderr)
+            return 1
+        from .report import write_report
+
+        meta = {
+            "brand": ", ".join(name for name, _ in per_brand),
+            "size_input": args.size,
+            "scale": args.scale,
+            "gender": args.gender,
+        }
+        out_dir = write_report(
+            [m.to_dict() for m in matches], meta,
+            embed_images=getattr(args, "embed_images", False),
+        )
+        print(f"Отчёт готов: {out_dir / 'index.html'}")
+        print(f"Откройте его в браузере или перешлите файл — {len(matches)} моделей.")
+        return 0
+
+    if args.format == "json":
+        output = render_json(matches)
+    elif args.format == "csv":
+        output = render_csv(matches)
+    else:
+        usable = {chart.key for chart in official_charts(args.scale, args.gender)}
+        skipped = [
+            chart.name for chart in official_charts() if chart.key not in usable
+        ]
+        lines = []
+        for name, found in per_brand:
+            eus = sorted({m.converted_eu for m in found if m.converted_eu is not None})
+            size_label = (
+                " · ".join(f"EU {v:g}".replace(".", ",") for v in eus) if eus else "—"
+            )
+            lines.append(f"  {name:<14} {_models(len(found)):<12} {size_label}")
+        header = ["По брендам:", *lines]
+        if skipped:
+            header.append(
+                f"Без официальной шкалы {normalize_scale(args.scale) or CM} "
+                "и потому пропущены: " + ", ".join(skipped)
+            )
+        header.append("")
+        output = "\n".join(header) + render_shoes_table(matches, show_brand=True)
+
+    if args.out:
+        with open(args.out, "w", encoding="utf-8-sig", newline="") as handle:
+            handle.write(output)
+        print(f"Сохранено в {args.out} ({len(matches)} строк)", file=sys.stderr)
+    else:
+        print(output)
+    return 0 if matches else 1
+
+
 def cmd_chart(args) -> int:
     """Официальная таблица размеров конкретной модели."""
     finder = _build_finder(args)
@@ -496,10 +603,19 @@ def cmd_size(args) -> int:
     print(f"Длина стопы {foot:g} см · {gender_label} сетка\n")
 
     if args.brand:
+        from .sizechart import resolve_brand
+
         result = sizes_for_foot(args.brand, foot, args.gender)
         if result is None:
-            print(f"Для «{args.brand}» официальной таблицы нет — "
-                  "размер подберётся по общей сетке при поиске.")
+            chart = resolve_brand(args.brand)
+            if chart is not None and not chart.has_foot_column(args.gender):
+                # Таблица есть, но замера стопы бренд не публикует (Puma).
+                print(f"{chart.name} не публикует длину стопы — по замеру "
+                      "размер подбирается по общей сетке, а её официальная "
+                      "таблица работает для US / UK / EU.")
+            else:
+                print(f"Для «{args.brand}» официальной таблицы нет — "
+                      "размер подберётся по общей сетке при поиске.")
         else:
             mark = "" if result["exact"] else " (≈ ближайший)"
             print(f"{result['brand']}{mark}:")
@@ -561,8 +677,13 @@ def cmd_brandchart(args) -> int:
     if not args.brand:
         print("Есть официальные таблицы:")
         for chart in charts.values():
+            # Бренд без колонки замера стопы не участвует в поиске по CM.
+            foot = (
+                "" if all(chart.has_foot_column(g) for g in ("men", "women"))
+                else "  (без длины стопы)"
+            )
             print(f"  {chart.name:<14} муж. {len(chart.men):>2} · жен. {len(chart.women):>2}"
-                  f"   {chart.source}")
+                  f"   {chart.source}{foot}")
         return 0
 
     chart = resolve_brand(args.brand)
@@ -575,13 +696,18 @@ def cmd_brandchart(args) -> int:
     label = "женская" if args.gender == "women" else "мужская / унисекс"
     print(f"{chart.name} — {label}")
     print(f"Источник: {chart.source}\n")
-    print(f"{'US':<8}{'UK':<8}{'EU':<10}{'см':<8}")
-    print("─" * 34)
+    # «Стопа» — замер, «CM/JP» — ярлык бренда. У части брендов есть только
+    # одна из этих колонок, и подменять одну другой нельзя.
+    print(f"{'US':<8}{'UK':<8}{'EU':<10}{'стопа':<8}{'CM/JP':<8}")
+    print("─" * 42)
     for row in rows:
         def fmt(key):
             value = row.get(key)
             return "—" if value is None else f"{value:g}".replace(".", ",")
-        print(f"{fmt('us'):<8}{fmt('uk'):<8}{fmt('eu'):<10}{fmt('cm'):<8}")
+        print(
+            f"{fmt('us'):<8}{fmt('uk'):<8}{fmt('eu'):<10}"
+            f"{fmt('foot'):<8}{fmt('cm'):<8}"
+        )
     return 0
 
 
@@ -630,6 +756,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  python main.py shoes -b nike -s 26,5           — стопа 26,5 см, в наличии\n"
             "  python main.py shoes -b adidas -s 27 --gender women\n"
             "  python main.py shoes -b nike -s 42 --scale EU  — если знаете размер в EU\n"
+            "  python main.py allbrands -s 26,5               — сразу все бренды с\n"
+            "                                                   официальной таблицей\n"
             "  python main.py brandchart nike                 — официальная таблица бренда\n"
             "\n"
             "Поиск по названию:\n"
@@ -679,6 +807,46 @@ def build_parser() -> argparse.ArgumentParser:
                        help="вшить фото в HTML-отчёт (автономный файл, тяжелее)")
     shoes.add_argument("-o", "--out", help="сохранить результат в файл")
     shoes.set_defaults(func=cmd_shoes)
+
+    allbrands = sub.add_parser(
+        "allbrands", parents=[common],
+        help="обувь сразу всех брендов с официальной таблицей размеров",
+    )
+    allbrands.add_argument(
+        "-s", "--size", required=True,
+        help="длина стопы в сантиметрах, например 26,5",
+    )
+    allbrands.add_argument(
+        "--scale", default="CM",
+        help="шкала: CM — длина стопы (по умолчанию). В EU/UK/«US M»/«US W» "
+             "участвуют и бренды без колонки замера стопы",
+    )
+    allbrands.add_argument(
+        "--gender", choices=["men", "women"], default="men",
+        help="какая сетка брендов: мужская/унисекс (по умолчанию) или женская",
+    )
+    allbrands.add_argument(
+        "--brands", nargs="+",
+        help="только эти бренды из списка официальных, например nike reebok",
+    )
+    allbrands.add_argument("-n", "--limit", type=int, default=10,
+                           help="сколько моделей брать у одного бренда")
+    allbrands.add_argument("--total", type=int, default=0,
+                           help="общий потолок выдачи; 0 — без ограничения")
+    allbrands.add_argument("--check", type=int, default=40,
+                           help="сколько карточек проверять у бренда; 0 — весь каталог")
+    allbrands.add_argument("--tolerance", type=float, default=0.0, help="допуск по размеру")
+    allbrands.add_argument("--max-price", type=float, help="максимальная цена размера")
+    allbrands.add_argument("--min-price", type=float, help="минимальная цена размера")
+    allbrands.add_argument("--kids", action="store_true", help="включая детскую обувь")
+    allbrands.add_argument("-w", "--workers", type=int, default=3,
+                           help="параллельных загрузок карточек")
+    allbrands.add_argument("-f", "--format",
+                           choices=["table", "json", "csv", "html"], default="table")
+    allbrands.add_argument("--embed-images", action="store_true",
+                           help="вшить фото в HTML-отчёт")
+    allbrands.add_argument("-o", "--out", help="сохранить результат в файл")
+    allbrands.set_defaults(func=cmd_allbrands)
 
     brands = sub.add_parser("brands", parents=[common], help="список брендов сайта")
     brands.add_argument("query", nargs="?", help="фильтр по названию")

@@ -13,7 +13,14 @@ from typing import TYPE_CHECKING, Callable, Iterable, Optional
 from .client import Cancelled, ChallengeRequired, PoizonClient, PoizonError
 from .extract import parse_product
 from .models import Match, Product, SearchItem
-from .sizechart import EU, SizeChart, convert_to_eu, normalize_scale
+from .sizechart import (
+    CM,
+    EU,
+    SizeChart,
+    convert_to_eu,
+    normalize_scale,
+    official_charts,
+)
 from .sizes import match_size, parse_size_query, scale_priority
 
 if TYPE_CHECKING:
@@ -369,6 +376,99 @@ class SizeFinder:
             key=lambda m: m.offer.price if m.offer.price is not None else float("inf")
         )
         return matches
+
+    def find_in_official_brands(
+        self,
+        size: str | float,
+        scale: str = CM,
+        limit: int = 10,
+        total_limit: Optional[int] = None,
+        check: Optional[int] = 40,
+        tolerance: float = 0.0,
+        max_price: Optional[float] = None,
+        min_price: Optional[float] = None,
+        include_kids: bool = False,
+        catalog: Optional["Catalog"] = None,
+        workers: int = 1,
+        gender: str = "men",
+        only: Optional[Iterable[str]] = None,
+        on_brand: Optional[Callable[[str, list[Match]], None]] = None,
+    ) -> list[Match]:
+        """Обход сразу всех брендов с официальной таблицей размеров.
+
+        Один замер стопы → одна выдача по всем таким брендам: каждому размер
+        переводится по **его** официальной сетке, поэтому в одном списке лежат
+        разные EU — это не ошибка, а несовпадение сеток производителей.
+
+        Берутся только бренды, публикующие запрошенную шкалу: по длине стопы
+        (``scale="CM"``) Puma отпадает, потому что замер стопы она не публикует;
+        по ``scale="EU"`` или ``"US M"`` она участвует.
+
+        Args:
+            limit: сколько моделей брать у одного бренда.
+            total_limit: общий потолок выдачи после сортировки по цене.
+            only: ограничить список брендов (имена или ключи таблиц).
+            on_brand: вызывается после каждого бренда — (имя, его находки).
+
+        Бренды, которых нет в каталоге сайта, пропускаются с сообщением
+        в прогресс, а не роняют весь обход.
+        """
+        from .catalog import Catalog  # локальный импорт: избегаем цикла
+
+        catalog = catalog or Catalog(self.client)
+        scale = normalize_scale(scale) or CM
+
+        charts = official_charts(scale, gender)
+        if only:
+            wanted = {str(name).strip().lower() for name in only}
+            charts = [
+                chart for chart in charts
+                if chart.key in wanted or chart.name.lower() in wanted
+            ]
+        if not charts:
+            self.on_progress(
+                f"нет брендов с официальной таблицей для шкалы {scale}"
+            )
+            return []
+
+        self.on_progress(
+            "бренды с официальной таблицей: "
+            + ", ".join(chart.name for chart in charts)
+        )
+
+        matches: list[Match] = []
+        for index, chart in enumerate(charts, 1):
+            self.on_progress(f"[{index}/{len(charts)}] {chart.name}")
+            try:
+                found = self.find_by_brand(
+                    brand=chart.name,
+                    size=size,
+                    scale=scale,
+                    limit=limit,
+                    check=check,
+                    tolerance=tolerance,
+                    max_price=max_price,
+                    min_price=min_price,
+                    include_kids=include_kids,
+                    catalog=catalog,
+                    workers=workers,
+                    gender=gender,
+                )
+            except ValueError as exc:
+                # Бренда нет в каталоге сайта — остальные всё равно обходим.
+                self.on_progress(f"{chart.name}: {exc}")
+                found = []
+
+            for match in found:
+                match.product.brand = match.product.brand or chart.name
+            matches.extend(found)
+            if on_brand:
+                on_brand(chart.name, found)
+
+        matches.sort(
+            key=lambda m: m.offer.price if m.offer.price is not None else float("inf")
+        )
+        return matches[:total_limit] if total_limit else matches
 
     def scan_products(
         self,

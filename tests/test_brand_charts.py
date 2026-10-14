@@ -17,23 +17,34 @@ from poizon_parser.sizechart import (
 )
 
 
+#: Бренды, публикующие собственный замер стопы, — только они годятся для
+#: подбора размера по длине стопы.
+FOOT_BRANDS = {"nike", "adidas", "new-balance", "asics", "reebok"}
+
+
 class TestChartsLoaded(unittest.TestCase):
-    def test_all_four_brands_present(self):
+    def test_all_brands_present(self):
         charts = load_brand_charts()
         self.assertEqual(
-            set(charts), {"nike", "adidas", "new-balance", "asics"}
+            set(charts),
+            {"nike", "adidas", "new-balance", "asics", "reebok", "puma"},
         )
 
     def test_each_chart_has_source_and_rows(self):
         for chart in load_brand_charts().values():
             self.assertTrue(chart.source.startswith("http"), chart.key)
-            self.assertEqual(chart.verified_at, "2026-07-26", chart.key)
+            self.assertRegex(chart.verified_at, r"^\d{4}-\d{2}-\d{2}$", chart.key)
             self.assertTrue(chart.locale, chart.key)
-            self.assertEqual(set(chart.sources), {"men", "women"}, chart.key)
+            self.assertLessEqual({"men", "women"}, set(chart.sources), chart.key)
             self.assertGreater(len(chart.men), 10, chart.key)
             self.assertGreater(len(chart.women), 10, chart.key)
-            self.assertTrue(chart.has_foot_column("men"), chart.key)
-            self.assertTrue(chart.has_foot_column("women"), chart.key)
+
+    def test_foot_column_present_exactly_where_brand_publishes_it(self):
+        for chart in load_brand_charts().values():
+            expected = chart.key in FOOT_BRANDS
+            for gender in ("men", "women"):
+                with self.subTest(brand=chart.key, gender=gender):
+                    self.assertEqual(chart.has_foot_column(gender), expected)
 
     def test_rows_sorted_and_consistent(self):
         for chart in load_brand_charts().values():
@@ -52,6 +63,8 @@ class TestChartsLoaded(unittest.TestCase):
             "adidas": (28, 28),
             "new-balance": (30, 25),
             "asics": (24, 19),
+            "reebok": (26, 22),
+            "puma": (22, 12),
         }
         for key, counts in expected.items():
             self.assertEqual(
@@ -77,8 +90,18 @@ class TestResolveBrand(unittest.TestCase):
         self.assertEqual(resolve_brand("new-balance").key, "new-balance")
 
     def test_unknown_brand_is_none(self):
-        self.assertIsNone(resolve_brand("Puma"))
+        self.assertIsNone(resolve_brand("Vans"))
         self.assertIsNone(resolve_brand(None))
+
+    def test_reebok_and_puma_resolve(self):
+        self.assertEqual(resolve_brand("Reebok").key, "reebok")
+        self.assertEqual(resolve_brand("Puma").key, "puma")
+
+    def test_brand_without_foot_column_is_not_offered_for_measurement(self):
+        # Каталог помечает бренд официальным только если по нему можно
+        # подобрать размер по замеру стопы; у Puma такой колонки нет.
+        self.assertIsNone(resolve_official_chart("Puma"))
+        self.assertEqual(resolve_official_chart("Reebok").key, "reebok")
 
     def test_substrings_do_not_impersonate_official_brands(self):
         for name in ("NBA", "ANBOLUOLI", "MACHENIKE"):
@@ -145,12 +168,61 @@ class TestOfficialConversion(unittest.TestCase):
         # 27 см как ЗАМЕР — это уже US 10, а не US 9.
         self.assertEqual(convert_to_eu(CM, 27.1, None, brand="Nike").eu, 44.0)
 
+    def test_reebok_us_men_9(self):
+        # Официальная сетка Reebok: US 9 = UK 8 = EU 42.
+        result = convert_to_eu(US_MEN, 9.0, None, brand="Reebok")
+        self.assertEqual((result.eu, result.source), (42.0, "brand"))
+        self.assertTrue(result.exact)
+
+    def test_reebok_differs_from_nike_on_same_us(self):
+        reebok = convert_to_eu(US_MEN, 9.0, None, brand="Reebok").eu
+        nike = convert_to_eu(US_MEN, 9.0, None, brand="Nike").eu
+        self.assertEqual((reebok, nike), (42.0, 42.5))
+
+    def test_reebok_foot_from_official_heel_toe(self):
+        # 10,3 дюйма официальной таблицы = 26,2 см → US 9.
+        result = sizes_for_foot("Reebok", 26.2, "men")
+        self.assertEqual(
+            (result["eu"], result["us"], result["uk"], result["foot"]),
+            (42.0, 9.0, 8.0, 26.2),
+        )
+        self.assertTrue(result["exact"])
+
+    def test_reebok_women_uses_separate_official_table(self):
+        result = sizes_for_foot("Reebok", 24.1, "women")
+        self.assertEqual(
+            (result["eu"], result["us"], result["uk"]), (38.5, 8.0, 5.5)
+        )
+        self.assertTrue(result["exact"])
+
+    def test_puma_us_men_9(self):
+        result = convert_to_eu(US_MEN, 9.0, None, brand="Puma")
+        self.assertEqual((result.eu, result.source), (42.0, "brand"))
+        self.assertTrue(result.exact)
+
+    def test_puma_us_women_and_uk(self):
+        self.assertEqual(convert_to_eu(US_WOMEN, 8.0, None, brand="Puma").eu, 38.5)
+        self.assertEqual(convert_to_eu(UK, 8.0, None, brand="Puma").eu, 42.0)
+
+    def test_puma_cm_label_is_never_used_as_foot_length(self):
+        # Ярлык «27 см» у Puma стоит на паре под замер ~26,2 см. Считать его
+        # длиной стопы нельзя, поэтому перевод уходит на общую сетку.
+        result = convert_to_eu(CM, 26.5, None, brand="Puma")
+        self.assertEqual(result.source, "standard")
+        self.assertTrue(result.supported)
+        self.assertNotEqual(result.brand, "Puma")
+
+    def test_puma_cm_label_reported_for_us_size(self):
+        self.assertEqual(convert_to_eu(US_MEN, 9.0, None, brand="Puma").cm, 27.0)
+        self.assertIsNone(convert_to_eu(US_MEN, 9.0, None, brand="Puma").foot)
+
     def test_same_foot_uses_each_official_brand_grid(self):
         expected = {
             "Nike": 43.0,
             "Adidas": 43.3333,
             "New Balance": 42.0,
             "ASICS": 42.0,
+            "Reebok": 42.5,
         }
         for brand, eu in expected.items():
             with self.subTest(brand=brand):
@@ -252,9 +324,15 @@ class TestOfficialConversion(unittest.TestCase):
 
 class TestFallbacks(unittest.TestCase):
     def test_unknown_brand_falls_back_to_standard(self):
-        result = convert_to_eu(US_MEN, 9.0, None, brand="Puma")
+        result = convert_to_eu(US_MEN, 9.0, None, brand="Vans")
         self.assertEqual(result.source, "standard")
         self.assertEqual(result.eu, 42.5)
+
+    def test_unpublished_scale_falls_back_instead_of_refusing(self):
+        # Шкалы нет в таблице бренда — это не «размера не существует».
+        result = convert_to_eu(CM, 26.2, None, brand="Puma")
+        self.assertTrue(result.supported)
+        self.assertEqual(result.source, "standard")
 
     def test_eu_passthrough_even_with_brand(self):
         result = convert_to_eu(EU, 42.0, None, brand="Nike")

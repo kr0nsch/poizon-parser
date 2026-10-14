@@ -10,6 +10,8 @@ Excel, HTML-кэша или доступности сети: повторный 
   * Adidas — adidas.com/us/help/size_charts/shoes
   * New Balance — newbalance.com/size-guide.html
   * ASICS — me.asics.com/en-qa/shoe-size-guide
+  * Reebok — reebok.eu («Size guide» на карточке) + reebok.com/pages/size-guides
+  * PUMA — vn.puma.com (единственная страница PUMA с колонкой JPN/CM)
 
 Запуск: python tools/build_size_charts.py
 """
@@ -22,7 +24,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "poizon_parser" / "data" / "size_charts.json"
-VERIFIED_AT = "2026-07-26"
+
+#: Дата ручной сверки каждой таблицы с сайтом производителя. Отдельная на
+#: бренд: добавление нового бренда не должно выдавать старые таблицы за
+#: только что перепроверенные.
+VERIFIED_AT = {
+    "nike": "2026-07-26",
+    "adidas": "2026-07-26",
+    "new-balance": "2026-07-26",
+    "asics": "2026-07-26",
+    "reebok": "2026-07-27",
+    "puma": "2026-07-27",
+}
 
 # `cm` — опубликованная брендом колонка CM/JP/Length.
 # `foot` — значение, с которым официальный источник предлагает сопоставлять
@@ -49,6 +62,19 @@ def num(value) -> float | None:
         return float(re.sub(r"[^0-9.]", "", text))
     except ValueError:
         return None
+
+
+def inches_to_cm(values: str) -> str:
+    """Колонка дюймов → сантиметры с одним знаком.
+
+    Reebok публикует замер стопы только в дюймах, поэтому в файле остаются
+    исходные официальные значения, а перевод виден здесь.
+    """
+    out = []
+    for item in values.split("|"):
+        value = num(item)
+        out.append("--" if value is None else f"{round(value * 2.54, 1):g}")
+    return "|".join(out)
 
 
 def columns(raw: dict[str, str]) -> dict[str, list[str]]:
@@ -143,11 +169,60 @@ ASICS_WOMEN = {
 }
 
 
+# Reebok раздаёт сетку двумя официальными кусками. Соответствие EU/UK/US —
+# из «Size guide» на карточке товара reebok.eu (таблицы «Unisex Shoes» и
+# «Womens Shoes»). Замер стопы — только на reebok.com и только в дюймах
+# (колонка «Heel-Toe Measurement»), поэтому дюймы и лежат в источнике.
+REEBOK_MEN_FOOT_IN = (
+    "8.3|8.5|8.7|8.8|9|9.2|9.3|9.5|9.7|9.8|10|10.2|10.3|10.5|10.7|10.8|11|"
+    "11.2|11.3|11.5|11.7|11.8|12|12.3|12.6|13"
+)
+REEBOK_MEN = {
+    "us": "3|3.5|4|4.5|5|5.5|6|6.5|7|7.5|8|8.5|9|9.5|10|10.5|11|11.5|12|12.5|13|13.5|14|15|16|17",
+    "uk": "2|2.5|3|3.5|4|4.5|5|5.5|6|6.5|7|7.5|8|8.5|9|9.5|10|10.5|11|11.5|12|12.5|13|14|15|16",
+    "eu": "33|34|34.5|35|36|36.5|37.5|38.5|39|40|40.5|41|42|42.5|43|44|44.5|45|45.5|46|47|48|48.5|50|52|53.5",
+    "foot": inches_to_cm(REEBOK_MEN_FOOT_IN),
+}
+
+REEBOK_WOMEN_FOOT_IN = (
+    "8|8.2|8.3|8.5|8.7|8.8|9|9.2|9.3|9.5|9.7|9.8|10|10.2|10.3|10.5|10.7|10.8|"
+    "11|11.2|11.3|11.5"
+)
+REEBOK_WOMEN = {
+    "us": "3.5|4|4.5|5|5.5|6|6.5|7|7.5|8|8.5|9|9.5|10|10.5|11|11.5|12|12.5|13|13.5|14",
+    "uk": "1|1.5|2|2.5|3|3.5|4|4.5|5|5.5|6|6.5|7|7.5|8|8.5|9|9.5|10|10.5|11|11.5",
+    "eu": "33|34|34.5|35|35.5|36|37|37.5|38|38.5|39|40|40.5|41|42|42.5|43|44|44.5|45|46|47",
+    "foot": inches_to_cm(REEBOK_WOMEN_FOOT_IN),
+}
+
+
+# PUMA нигде не публикует длину стопы — только ярлык JPN/CM (у Nike и Adidas
+# такой же ярлык «27 см» стоит на паре под замер 26,2–26,3 см). Поэтому колонки
+# `foot` у PUMA нет: по замеру стопы бренд остаётся на общей сетке с «≈»,
+# а перевод US / UK / EU идёт по официальной таблице.
+# Мужская колонка — из таблицы «Unisex Shoes» (US (Men)), женская — из «Women».
+PUMA_MEN = {
+    "us": "4|4.5|5|5.5|6|6.5|7|7.5|8|8.5|9|9.5|10|10.5|11|11.5|12|12.5|13|14|15|16",
+    "uk": "3|3.5|4|4.5|5|5.5|6|6.5|7|7.5|8|8.5|9|9.5|10|10.5|11|11.5|12|13|14|15",
+    "eu": "35.5|36|37|37.5|38|38.5|39|40|40.5|41|42|42.5|43|44|44.5|45|46|46.5|47|48.5|49.5|51",
+    "cm": "22|22.5|23|23.5|24|24.5|25|25.5|26|26.5|27|27.5|28|28.5|29|29.5|30|30.5|31|32|--|--",
+}
+PUMA_WOMEN = {
+    "us": "5.5|6|6.5|7|7.5|8|8.5|9|9.5|10|10.5|11",
+    "uk": "3|3.5|4|4.5|5|5.5|6|6.5|7|7.5|8|8.5",
+    "eu": "35.5|36|37|37.5|38|38.5|39|40|40.5|41|42|42.5",
+    "cm": "22|22.5|23|23.5|24|24.5|25|25.5|26|26.5|27|27.5",
+}
+
+
 EXPECTED_ROWS = {
     "nike": {"men": 38, "women": 39, "foot_men": 38, "foot_women": 28},
     "adidas": {"men": 28, "women": 28, "foot_men": 28, "foot_women": 28},
     "new-balance": {"men": 30, "women": 25, "foot_men": 30, "foot_women": 25},
     "asics": {"men": 24, "women": 19, "foot_men": 24, "foot_women": 19},
+    "reebok": {"men": 26, "women": 22, "foot_men": 26, "foot_women": 22},
+    # PUMA не публикует замер стопы ни на одном своём сайте — колонки нет.
+    "puma": {"men": 22, "women": 12, "foot_men": 0, "foot_women": 0},
 }
 
 
@@ -162,7 +237,7 @@ def build_charts() -> dict[str, dict]:
                 "women": "https://www.nike.com/size-fit/womens-footwear",
             },
             "locale": "en-US",
-            "verified_at": VERIFIED_AT,
+            "verified_at": VERIFIED_AT["nike"],
             "men": rows_from_columns(NIKE_MEN),
             "women": rows_from_columns(NIKE_WOMEN),
         },
@@ -174,7 +249,7 @@ def build_charts() -> dict[str, dict]:
                 "women": "https://www.adidas.com/us/help/size_charts/shoes",
             },
             "locale": "en-US",
-            "verified_at": VERIFIED_AT,
+            "verified_at": VERIFIED_AT["adidas"],
             "men": rows_from_columns({"us": ADIDAS_MEN_US, **ADIDAS_COMMON}),
             "women": rows_from_columns({"us": ADIDAS_WOMEN_US, **ADIDAS_COMMON}),
         },
@@ -186,7 +261,7 @@ def build_charts() -> dict[str, dict]:
                 "women": "https://www.newbalance.com/size-guide.html",
             },
             "locale": "en-US",
-            "verified_at": VERIFIED_AT,
+            "verified_at": VERIFIED_AT["new-balance"],
             "men": rows_from_columns(NEW_BALANCE_MEN),
             "women": rows_from_columns(NEW_BALANCE_WOMEN),
         },
@@ -198,9 +273,36 @@ def build_charts() -> dict[str, dict]:
                 "women": "https://me.asics.com/en-qa/shoe-size-guide",
             },
             "locale": "en-QA",
-            "verified_at": VERIFIED_AT,
+            "verified_at": VERIFIED_AT["asics"],
             "men": rows_from_columns(ASICS_MEN),
             "women": rows_from_columns(ASICS_WOMEN),
+        },
+        "reebok": {
+            "name": "Reebok",
+            "source": "https://www.reebok.com/pages/size-guides",
+            "sources": {
+                # Сетку EU/UK/US Reebok показывает только в модальном окне
+                # «Size guide» на карточке товара — отдельного адреса у неё нет.
+                "men": "https://www.reebok.eu/collections/mens-shoes",
+                "women": "https://www.reebok.eu/collections/womens-shoes",
+                "foot": "https://www.reebok.com/pages/size-guides",
+            },
+            "locale": "en-GB",
+            "verified_at": VERIFIED_AT["reebok"],
+            "men": rows_from_columns(REEBOK_MEN),
+            "women": rows_from_columns(REEBOK_WOMEN),
+        },
+        "puma": {
+            "name": "Puma",
+            "source": "https://vn.puma.com/vn/en/VN-size-guide-footer-2025.html",
+            "sources": {
+                "men": "https://vn.puma.com/vn/en/VN-size-guide-footer-2025.html",
+                "women": "https://vn.puma.com/vn/en/VN-size-guide-footer-2025.html",
+            },
+            "locale": "en-VN",
+            "verified_at": VERIFIED_AT["puma"],
+            "men": rows_from_columns(PUMA_MEN),
+            "women": rows_from_columns(PUMA_WOMEN),
         },
     }
     validate_charts(charts)
@@ -216,7 +318,7 @@ def validate_charts(charts: dict[str, dict]) -> None:
         expected = EXPECTED_ROWS[key]
         if not str(chart["source"]).startswith("https://"):
             raise ValueError(f"{key}: отсутствует официальный HTTPS-источник")
-        if chart.get("verified_at") != VERIFIED_AT:
+        if chart.get("verified_at") != VERIFIED_AT[key]:
             raise ValueError(f"{key}: отсутствует дата сверки")
 
         for gender in ("men", "women"):

@@ -86,16 +86,23 @@ class TestSizeCalculator(unittest.TestCase):
         self.assertTrue(result["exact"])
 
     def test_unknown_brand_returns_none(self):
+        self.assertIsNone(sizes_for_foot("vans", 26.2))
+
+    def test_brand_without_foot_column_returns_none(self):
+        # У Puma официальная таблица есть, но замера стопы в ней нет.
         self.assertIsNone(sizes_for_foot("puma", 26.2))
 
     def test_out_of_range_returns_none(self):
         self.assertIsNone(sizes_for_foot("nike", 8.0))
 
-    def test_compare_covers_four_brands(self):
+    def test_compare_covers_brands_with_foot_column(self):
         rows = compare_brands(26.2, "men")
-        self.assertEqual(len(rows), 4)
         names = {r["brand"] for r in rows}
-        self.assertEqual(names, {"Nike", "Adidas", "New Balance", "ASICS"})
+        self.assertEqual(
+            names, {"Nike", "Adidas", "New Balance", "ASICS", "Reebok"}
+        )
+        # Puma сравнивать не с чем: длину стопы она не публикует.
+        self.assertNotIn("Puma", names)
 
     def test_compare_shows_brand_differences(self):
         rows = {r["brand"]: r["eu"] for r in compare_brands(29.6, "men")}

@@ -11,10 +11,12 @@
 до ~34,5 (US-шаг мельче EU-шага). Линейная экстраполяция от трёх строк на этом
 промахивается на 2–2,5 размера.
 
-Для Nike, Adidas, New Balance и ASICS перевод идёт по захардкоженному снимку
-официальных мужских и женских таблиц. Межбрендовые подстановки запрещены. Для
-остальных брендов используется таблица конкретного товара, затем встроенная
-**эталонная лестница** (`_STANDARD_LADDER`); неточный перевод помечается «≈».
+Для Nike, Adidas, New Balance, ASICS, Reebok и Puma перевод идёт по
+захардкоженному снимку официальных мужских и женских таблиц. Межбрендовые
+подстановки запрещены: если бренд какую-то шкалу не публикует (Puma нигде не
+даёт длину стопы), она не подставляется из чужой сетки — работает таблица
+конкретного товара, затем встроенная **эталонная лестница**
+(`_STANDARD_LADDER`); неточный перевод помечается «≈».
 
 Про «US» и «US мужской». В кроссовочном контексте «US» без уточнения — это
 **мужская** шкала (US_MEN). Женская (US_WOMEN) для той же пары примерно на 1,5
@@ -170,6 +172,8 @@ _BRAND_ALIASES = {
     "newbalance": "new-balance",
     "nb": "new-balance",
     "asics": "asics",
+    "reebok": "reebok",
+    "puma": "puma",
 }
 
 
@@ -196,6 +200,29 @@ class BrandChart:
     def has_foot_column(self, gender: str = "men") -> bool:
         """Публикует ли бренд длину стопы (а не только ярлык в сантиметрах)."""
         return any("foot" in row for row in self.rows(gender))
+
+    def publishes(self, scale: str, gender: str = "men") -> bool:
+        """Есть ли эта шкала в официальной таблице бренда.
+
+        Отличать «шкалы нет в таблице» от «размер вне таблицы» обязательно: в
+        первом случае перевод честно уходит на общую сетку, во втором размер
+        для бренда просто не существует. Puma, например, публикует US/UK/EU,
+        но нигде не даёт длину стопы.
+        """
+        scale = normalize_scale(scale) or scale
+        if scale == CM:
+            return self.has_foot_column(gender)
+        if scale == US_WOMEN:
+            gender, column = "women", "us"
+        elif scale == US_MEN:
+            gender, column = "men", "us"
+        elif scale == UK:
+            column = "uk"
+        elif scale == EU:
+            column = "eu"
+        else:
+            return False
+        return any(column in row for row in self.rows(gender))
 
     def by_foot(self, foot_cm: float, gender: str = "men") -> Optional[dict]:
         """Строка таблицы по замеру стопы.
@@ -326,19 +353,29 @@ def load_brand_charts() -> dict[str, BrandChart]:
     return charts
 
 
-def resolve_official_chart(name: Optional[str]) -> Optional[BrandChart]:
-    """Возвращает официальную таблицу только для точного имени или алиаса.
+def resolve_brand(name: Optional[str]) -> Optional[BrandChart]:
+    """«Adidas Originals», «Jordan» → таблица по явному имени или алиасу.
 
-    В отличие от ``resolve_brand`` здесь нет поиска по подстроке: этот резолвер
-    используется для маркировки каталога и не должен считать, например, NBA
-    брендом New Balance из-за короткого алиаса ``nb``.
+    Поиска по подстроке здесь нет намеренно: иначе NBA стал бы New Balance
+    из-за короткого алиаса ``nb``, а MACHENIKE — Nike.
     """
     if not name:
         return None
     charts = load_brand_charts()
     key = str(name).strip().lower()
     target = key if key in charts else _BRAND_ALIASES.get(key)
-    chart = charts.get(target) if target else None
+    return charts.get(target) if target else None
+
+
+def resolve_official_chart(name: Optional[str]) -> Optional[BrandChart]:
+    """Таблица бренда, по которой можно подобрать размер **по замеру стопы**.
+
+    Этим резолвером помечается каталог: пользователь вводит длину стопы, и
+    бренд имеет смысл предлагать, только если его официальная таблица содержит
+    собственную колонку замера в обеих сетках. Puma публикует лишь ярлык
+    CM/JP — она сюда не попадает, хотя её US/UK/EU-таблица используется.
+    """
+    chart = resolve_brand(name)
     if chart is None:
         return None
     if not all(chart.has_foot_column(gender) for gender in ("men", "women")):
@@ -346,9 +383,19 @@ def resolve_official_chart(name: Optional[str]) -> Optional[BrandChart]:
     return chart
 
 
-def resolve_brand(name: Optional[str]) -> Optional[BrandChart]:
-    """«Adidas Originals», «Jordan» → таблица по явному алиасу."""
-    return resolve_official_chart(name)
+def official_charts(
+    scale: Optional[str] = None, gender: str = "men"
+) -> list[BrandChart]:
+    """Бренды с официальной таблицей размеров, по алфавиту.
+
+    Со ``scale`` остаются только те, у кого эта шкала действительно
+    опубликована: искать по длине стопы (CM) можно лишь там, где бренд сам
+    даёт замер стопы.
+    """
+    charts = sorted(load_brand_charts().values(), key=lambda c: c.name.lower())
+    if scale is None:
+        return charts
+    return [chart for chart in charts if chart.publishes(scale, gender)]
 
 
 def sizes_for_foot(
@@ -555,9 +602,10 @@ def convert_to_eu(
 
     Порядок источников — от самого достоверного к запасному:
 
-    1. **Официальная таблица бренда** (Nike / Adidas / New Balance / ASICS),
-       если бренд известен. Именно её просил пользователь: сначала сверяемся
-       с сеткой производителя, потом ищем на POIZON.
+    1. **Официальная таблица бренда** (Nike / Adidas / New Balance / ASICS /
+       Reebok / Puma), если бренд известен и публикует нужную шкалу. Именно её
+       просил пользователь: сначала сверяемся с сеткой производителя, потом
+       ищем на POIZON.
     2. Таблица самого товара из карточки POIZON (3 опорные строки).
     3. Эталонная атлетическая лестница.
     4. Типовое смещение.
@@ -572,7 +620,12 @@ def convert_to_eu(
         result = brand_chart.to_eu(scale, value, gender)
         if result is not None:
             return result
-        if scale in {US_MEN, US_WOMEN, UK, CM}:
+        # «Вне таблицы» говорим только про шкалу, которую бренд публикует.
+        # Если колонки нет вовсе (у Puma нет замера стопы), это не значит, что
+        # размера не существует — переводим дальше по общей сетке.
+        if scale in {US_MEN, US_WOMEN, UK, CM} and brand_chart.publishes(
+            scale, gender
+        ):
             effective_gender = (
                 "women" if scale == US_WOMEN
                 else "men" if scale == US_MEN
