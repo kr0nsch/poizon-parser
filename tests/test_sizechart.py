@@ -4,6 +4,7 @@ import json
 import unittest
 from pathlib import Path
 
+from poizon_parser.extract import parse_product
 from poizon_parser.sizechart import (
     CM,
     EU,
@@ -14,6 +15,7 @@ from poizon_parser.sizechart import (
     convert_to_eu,
     normalize_scale,
 )
+from poizon_parser.sizes import parse_size
 
 FIXTURE = Path(__file__).parent / "fixtures" / "product_nb530.json"
 
@@ -48,6 +50,11 @@ class TestNormalizeScale(unittest.TestCase):
         self.assertEqual(normalize_scale("US M"), US_MEN)
         self.assertEqual(normalize_scale("usm"), US_MEN)
         self.assertEqual(normalize_scale("см"), CM)
+        self.assertEqual(normalize_scale("евро"), EU)
+        self.assertEqual(normalize_scale("us_w"), US_WOMEN)
+
+    def test_unknown_name_is_uppercased(self):
+        self.assertEqual(normalize_scale("jp"), "JP")
 
     def test_none(self):
         self.assertIsNone(normalize_scale(None))
@@ -65,10 +72,6 @@ class TestSizeChartParsing(unittest.TestCase):
         self.assertEqual(len(self.chart.rows), 3)
         self.assertEqual(self.chart.rows[0][EU], 35.5)
         self.assertEqual(self.chart.rows[0][US_MEN], 3.5)
-
-    def test_scales_listed(self):
-        self.assertIn(US_MEN, self.chart.scales)
-        self.assertIn(CM, self.chart.scales)
 
     def test_missing_module_gives_empty_chart(self):
         self.assertEqual(SizeChart.from_goods_detail({}).rows, [])
@@ -120,8 +123,30 @@ class TestConversion(unittest.TestCase):
     def test_offset_is_median(self):
         self.assertEqual(self.chart.offset_to_eu(US_MEN), 32.0)
 
-    def test_offset_spread_zero_for_uniform_table(self):
-        self.assertEqual(self.chart.offset_spread(US_MEN), 0.0)
+
+class TestFractionalProductTable(unittest.TestCase):
+    """Таблица товара с третями: ярлык «36⅔» против числа 36.6667."""
+
+    def setUp(self):
+        goods = json.loads(json.dumps(NIKE_GOODS))
+        block = goods["sizeAssistantModule"]["size"]["sizeList"][1]
+        for entry in block["sizeKeyList"]:
+            if entry["sizeKey"] == "EU":
+                entry["sizeValueList"] = ["36", "36⅔", "37⅓"]
+            if entry["sizeKey"] == "RU":
+                entry["sizeValueList"] = ["35", "35⅔", "36⅓"]
+        self.chart = SizeChart.from_goods_detail(goods)
+
+    def test_ru_row_found_despite_rounding(self):
+        # Пользователь вводит RU 35,6667 (округлённое) — строка «35⅔» та же.
+        result = self.chart.to_eu(RU, 35.6667)
+        self.assertEqual(result.source, "table")
+        self.assertAlmostEqual(result.eu, parse_size("36⅔"), places=9)
+
+    def test_neighbour_rows_not_merged(self):
+        result = self.chart.to_eu(RU, 35.5)
+        # Строки 35,5 нет — это не «35⅔», работает правило EU = RU + 1.
+        self.assertEqual((result.eu, result.source), (36.5, "native"))
 
 
 class TestBrandCorrection(unittest.TestCase):
@@ -168,14 +193,41 @@ class TestFallbackConversion(unittest.TestCase):
 
 
 class TestRealFixture(unittest.TestCase):
-    def test_chart_from_real_product(self):
+    """Сохранённая с сайта карточка New Balance 530."""
+
+    @classmethod
+    def setUpClass(cls):
         with FIXTURE.open(encoding="utf-8") as handle:
-            data = json.load(handle)
-        goods = data["props"]["pageProps"]["goodsDetail"]
-        chart = SizeChart.from_goods_detail(goods)
-        # У сохранённой фикстуры модуль таблицы не сохранялся — проверяем,
-        # что отсутствие данных не ломает разбор.
-        self.assertIsInstance(chart.rows, list)
+            cls.data = json.load(handle)
+        cls.goods = cls.data["props"]["pageProps"]["goodsDetail"]
+
+    def test_card_without_size_module_gives_empty_chart(self):
+        # Сайт отдаёт sizeAssistantModule не у всех товаров: у этой карточки
+        # его нет, и таблица должна быть пустой, а не мусорной.
+        self.assertNotIn("sizeAssistantModule", self.goods)
+        self.assertEqual(SizeChart.from_goods_detail(self.goods).rows, [])
+
+    def test_sku_ru_is_eu_minus_one(self):
+        # Правило, на котором держится перевод RU → EU без таблицы товара.
+        product = parse_product(self.data)
+        self.assertEqual(product.size_scales, ["RU", "EU"])
+        self.assertGreater(len(product.offers), 10)
+        for offer in product.offers:
+            with self.subTest(sizes=offer.sizes):
+                self.assertEqual(
+                    parse_size(offer.sizes["EU"]) - parse_size(offer.sizes["RU"]),
+                    1.0,
+                )
+
+    def test_empty_product_table_falls_back_to_brand_table(self):
+        product = parse_product(self.data)
+        self.assertEqual(product.brand, "New Balance")
+        result = convert_to_eu(US_MEN, 9.0, product.chart, brand=product.brand)
+        self.assertEqual(
+            (result.eu, result.source, result.exact), (42.5, "brand", True)
+        )
+        # И такой размер в карточке действительно есть.
+        self.assertIn("42,5", {offer.sizes["EU"] for offer in product.offers})
 
 
 if __name__ == "__main__":

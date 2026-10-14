@@ -6,7 +6,7 @@ import unittest
 from poizon_parser.catalog import Brand
 from poizon_parser.finder import SizeFinder
 from poizon_parser.models import Product, SearchItem, SizeOffer
-from poizon_parser.sizechart import CM, EU, US_MEN, official_charts
+from poizon_parser.sizechart import CM, EU, US_MEN, US_WOMEN, official_charts
 
 #: Размерный ряд карточки: одного EU мало — у каждого бренда он свой.
 EU_ROW = (41.0, 41.5, 42.0, 42.5, 43.0, 43.5)
@@ -119,6 +119,27 @@ class TestBrandSelection(unittest.TestCase):
         _catalog, _matches, seen = run(only=["reebok", "Nike"])
         self.assertEqual({name for name, _ in seen}, {"Nike", "Reebok"})
 
+    def test_only_filter_accepts_aliases(self):
+        _catalog, _matches, seen = run(
+            only=["nb", "jordan", "Adidas Originals", "new-balance"]
+        )
+        self.assertEqual(
+            {name for name, _ in seen}, {"New Balance", "Nike", "Adidas"}
+        )
+
+    def test_only_filter_reports_unknown_brand(self):
+        catalog = FakeCatalog(PRICES)
+        finder = StubFinder(catalog)
+        progress = []
+        finder.on_progress = progress.append
+        seen = []
+        finder.find_in_official_brands(
+            size="26,2", scale=CM, catalog=catalog, only=["vans", "nike"],
+            on_brand=lambda name, found: seen.append(name),
+        )
+        self.assertEqual(seen, ["Nike"])
+        self.assertTrue(any("vans" in line for line in progress))
+
     def test_brand_missing_from_catalog_does_not_stop_others(self):
         catalog = FakeCatalog({k: v for k, v in PRICES.items() if k != "Nike"})
         finder = StubFinder(catalog)
@@ -166,6 +187,36 @@ class TestResults(unittest.TestCase):
     def test_empty_when_no_brand_publishes_scale(self):
         _catalog, matches, seen = run(scale="RU", size="41")
         self.assertEqual((matches, seen), ([], []))
+
+
+class TestFindByBrandScale(unittest.TestCase):
+    """Шкала из строки размера против явной --scale."""
+
+    def find(self, size, scale=EU):
+        catalog = FakeCatalog(PRICES)
+        return StubFinder(catalog).find_by_brand(
+            "Nike", size=size, scale=scale, catalog=catalog
+        )
+
+    def test_us_women_in_size_string_is_women(self):
+        # Nike US W 10 = EU 42; мужской US 10 был бы EU 44 — его в ряду нет.
+        matches = self.find("US W 10")
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0].requested_scale, US_WOMEN)
+        self.assertEqual(matches[0].converted_eu, 42.0)
+
+    def test_bare_us_does_not_override_explicit_women_scale(self):
+        matches = self.find("US 10", scale="US W")
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0].requested_scale, US_WOMEN)
+
+    def test_bare_us_without_explicit_scale_is_men(self):
+        # US M 10 у Nike = EU 44, а ряд карточки заканчивается на 43,5.
+        self.assertEqual(self.find("US 10"), [])
+
+    def test_explicit_gender_in_size_string_wins(self):
+        matches = self.find("US W 10", scale="US M")
+        self.assertEqual(matches[0].requested_scale, US_WOMEN)
 
 
 if __name__ == "__main__":

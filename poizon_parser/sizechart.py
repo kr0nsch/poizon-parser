@@ -33,7 +33,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-from .sizes import parse_size
+from .sizes import SIZE_EPSILON, parse_size
 
 # Канонические имена шкал внутри парсера.
 EU = "EU"
@@ -131,7 +131,10 @@ def _ladder_to_eu(scale: str, value: float) -> Optional[float]:
 
 
 def normalize_scale(name: Optional[str]) -> Optional[str]:
-    """«us m», «США»… → канонический код шкалы."""
+    """«us m», «usw», «см», «евро»… → канонический код шкалы.
+
+    Незнакомое имя возвращается как есть, в верхнем регистре.
+    """
     if not name:
         return None
     key = str(name).strip().upper().replace("_", " ")
@@ -242,12 +245,15 @@ class BrandChart:
         if not measured_rows:
             return None
         if (
-            foot_cm < measured_rows[0]["foot"] - 1e-6
-            or foot_cm > measured_rows[-1]["foot"] + 1e-6
+            foot_cm < measured_rows[0]["foot"] - SIZE_EPSILON
+            or foot_cm > measured_rows[-1]["foot"] + SIZE_EPSILON
         ):
             return None
         best = next(
-            (row for row in measured_rows if row["foot"] >= foot_cm - 1e-6),
+            (
+                row for row in measured_rows
+                if row["foot"] >= foot_cm - SIZE_EPSILON
+            ),
             None,
         )
         return best
@@ -270,7 +276,10 @@ class BrandChart:
             gender_label = "женская" if gender == "women" else "мужская"
             note = f"по официальной таблице {self.name} ({gender_label} сетка)"
             matched_foot = row.get("foot")
-            exact = matched_foot is not None and abs(matched_foot - value) <= 1e-6
+            exact = (
+                matched_foot is not None
+                and abs(matched_foot - value) <= SIZE_EPSILON
+            )
             if matched_foot is not None and not exact:
                 foot_label = f"{matched_foot:g}".replace(".", ",")
                 note += f", ближайшая длина стопы {foot_label} см"
@@ -309,18 +318,19 @@ class BrandChart:
         if best is None:
             return None
 
-        # Слишком далеко от любой строки — размер вне сетки бренда.
-        tolerance = 0.4 if column != "cm" else 0.6
-        if best_delta > tolerance:
+        # Слишком далеко от любой строки — размер вне сетки бренда. Сюда
+        # доходят только US/UK/EU: длина стопы обработана выше через by_foot.
+        if best_delta > 0.4:
             return None
 
+        exact = best_delta <= SIZE_EPSILON
         gender_label = "женская" if gender == "women" else "мужская"
         note = f"по официальной таблице {self.name} ({gender_label} сетка)"
-        if best_delta > 1e-6:
+        if not exact:
             note += f", ближайшая строка {scale} {best[column]:g}".replace(".", ",")
         return Conversion(
             eu=best["eu"],
-            exact=best_delta <= 1e-6,
+            exact=exact,
             source="brand",
             note=note,
             cm=best.get("cm"),
@@ -416,7 +426,7 @@ def sizes_for_foot(
         "brand": chart.name,
         "gender": gender,
         "requested_foot": round(foot_cm, 1),
-        "exact": ("foot" in row and abs(row["foot"] - foot_cm) <= 1e-6),
+        "exact": ("foot" in row and abs(row["foot"] - foot_cm) <= SIZE_EPSILON),
     }
     for key in ("eu", "us", "uk", "cm", "foot"):
         if key in row:
@@ -479,10 +489,6 @@ class SizeChart:
 
     # ------------------------------------------------------------ работа
 
-    @property
-    def scales(self) -> list[str]:
-        return sorted({scale for row in self.rows for scale in row})
-
     def offset_to_eu(self, scale: str) -> Optional[float]:
         """Медианное смещение EU − значение шкалы по опорным строкам.
 
@@ -497,15 +503,6 @@ class SizeChart:
         if not deltas:
             return None
         return statistics.median(deltas)
-
-    def offset_spread(self, scale: str) -> float:
-        """Разброс смещений между опорными строками — мера надёжности."""
-        deltas = [
-            row[EU] - row[scale]
-            for row in self.rows
-            if EU in row and scale in row
-        ]
-        return (max(deltas) - min(deltas)) if len(deltas) > 1 else 0.0
 
     def ladder_correction(self, scale: str) -> float:
         """Поправка эталонной лестницы под конкретный бренд.
@@ -573,7 +570,7 @@ class SizeChart:
 
     def _row_with(self, scale: str, value: float) -> Optional[dict[str, float]]:
         for row in self.rows:
-            if scale in row and abs(row[scale] - value) < 1e-6:
+            if scale in row and abs(row[scale] - value) <= SIZE_EPSILON:
                 return row
         return None
 

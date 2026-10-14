@@ -13,6 +13,12 @@ from typing import Iterable, Optional
 # при поиске без явного указания шкалы.
 KNOWN_SCALES = ("RU", "EU", "US", "UK", "CN", "JP", "FR", "IT", "DEFAULT")
 
+#: Насколько могут расходиться два числа, обозначающие один и тот же размер.
+#: Таблицы брендов хранят трети округлёнными (42⅔ → 42.6667), а ярлык SKU
+#: «42⅔» разбирается в 42.666…: сравнение «до 1e-9» считало бы их разными.
+#: Самый мелкий настоящий шаг сетки — ⅛ (0,125), так что 1e-3 его не съедает.
+SIZE_EPSILON = 1e-3
+
 # Adidas и ряд других брендов публикуют размеры дробями: «42⅓», «41⅔».
 # Без этого «42⅓» читалось бы как ровно 42 и подменяло бы размер.
 _FRACTIONS = {
@@ -24,9 +30,24 @@ _FRACTIONS = {
 _NUM_RE = re.compile(
     r"(\d+(?:[.,]\d+)?)\s*([" + "".join(_FRACTIONS) + r"])?"
 )
+# «US W» / «US M» и метрические шкалы проверяются раньше голого «US»: иначе
+# «US W 7» разбиралось бы как «US» + «W 7» и превращалось в мужской US 7.
 _SCALE_PREFIX_RE = re.compile(
-    r"^\s*(" + "|".join(KNOWN_SCALES) + r")\s*[-:]?\s*(.+)$", re.IGNORECASE
+    r"^\s*(US[\s_-]*(?:W|M|ЖЕН|МУЖ)[^\d\s]*|CM|MM|СМ|ММ|"
+    + "|".join(KNOWN_SCALES)
+    + r")\s*[-:]?\s*(.+)$",
+    re.IGNORECASE,
 )
+#: Кириллические «см»/«мм» → латинские коды, которые понимает sizechart.
+_METRIC_PREFIXES = {"СМ": "CM", "ММ": "MM"}
+
+
+def _canonical_scale(prefix: str) -> str:
+    """Префикс из ввода → имя шкалы: «usw» → «US W», «см» → «CM»."""
+    key = re.sub(r"[\s_-]+", "", prefix).upper()
+    if key.startswith("US") and len(key) > 2:
+        return "US W" if key[2] in ("W", "Ж") else "US M"
+    return _METRIC_PREFIXES.get(key, key)
 
 
 def parse_size(text: str | float | int | None) -> Optional[float]:
@@ -53,18 +74,13 @@ def parse_size(text: str | float | int | None) -> Optional[float]:
     return value
 
 
-def format_size(value: float) -> str:
-    """42.0 → «42», 42.5 → «42,5» (как на сайте)."""
-    if float(value).is_integer():
-        return str(int(value))
-    return f"{value:g}".replace(".", ",")
-
-
 def parse_size_query(text: str) -> tuple[Optional[str], float]:
     """Разбирает пользовательский ввод размера.
 
-    Поддерживает «42», «42,5», «RU42», «EU 43», «US 9.5».
-    Возвращает (шкала или None, число).
+    Поддерживает «42», «42,5», «RU42», «EU 43», «US 9.5», «US W 7», «usm 9»,
+    «CM 26,5», «MM 265». Возвращает (шкала или None, число); шкалы с полом и
+    метрические приходят в виде, понятном ``sizechart.normalize_scale``:
+    «US W», «US M», «CM», «MM». Голое «US» остаётся «US» — пол в нём не задан.
     """
     raw = str(text).strip()
     if not raw:
@@ -73,7 +89,7 @@ def parse_size_query(text: str) -> tuple[Optional[str], float]:
     scale: Optional[str] = None
     match = _SCALE_PREFIX_RE.match(raw)
     if match:
-        scale = match.group(1).upper()
+        scale = _canonical_scale(match.group(1))
         raw = match.group(2)
 
     value = parse_size(raw)
@@ -128,10 +144,10 @@ def match_size(
         if value is None:
             continue
         delta = abs(value - requested)
-        if delta <= tolerance + 1e-9:
+        if delta <= tolerance + SIZE_EPSILON:
             if best is None or delta < best[1]:
                 best = (candidate, delta)
             # Точное совпадение в приоритетной шкале — лучше не найти.
-            if delta <= 1e-9:
+            if delta <= SIZE_EPSILON:
                 break
     return best

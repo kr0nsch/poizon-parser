@@ -4,6 +4,7 @@ import threading
 import time
 import unittest
 import urllib.error
+from unittest import mock
 
 from poizon_parser.client import Cancelled, PoizonClient
 from poizon_parser.webapp import JobManager
@@ -44,12 +45,14 @@ class TestActivityTelemetry(unittest.TestCase):
         self.assertIn("ms", resp)
 
     def test_last_activity_updates(self):
+        # Часы подменены: time.time() на Windows тикает раз в ~15,6 мс, и
+        # сравнение «до/после» через реальный sleep(0.01) было нестабильным.
         c = PoizonClient(delay=0.01)
         c._opener = type("O", (), {"open": staticmethod(lambda r, timeout: _Resp())})()
-        before = c.last_activity_at
-        time.sleep(0.01)
-        c._get_html("https://www.thepoizon.ru/product/1")
-        self.assertGreater(c.last_activity_at, before)
+        c.last_activity_at = 1000.0
+        with mock.patch.object(time, "time", return_value=2000.0):
+            c._get_html("https://www.thepoizon.ru/product/1")
+        self.assertEqual(c.last_activity_at, 2000.0)
 
     def test_net_error_emitted(self):
         events = []
@@ -84,10 +87,23 @@ class TestInterruptibleBackoff(unittest.TestCase):
         self.assertLess(time.monotonic() - start, 2.0)
 
     def test_sleep_completes_normally(self):
+        # Поддельные часы: проверяем, что спим ровно заданное время короткими
+        # кусками (чтобы «Стоп» срабатывал), не завися от разрешения таймера.
+        clock = {"now": 100.0}
+        naps = []
+
+        def fake_sleep(seconds):
+            naps.append(seconds)
+            clock["now"] += seconds
+
         c = PoizonClient(delay=0.01)
-        start = time.monotonic()
-        c._sleep(0.2)
-        self.assertGreaterEqual(time.monotonic() - start, 0.15)
+        c.should_stop = lambda: False
+        with mock.patch.object(time, "monotonic", lambda: clock["now"]), \
+                mock.patch.object(time, "sleep", fake_sleep):
+            c._sleep(1.0)
+        self.assertAlmostEqual(sum(naps), 1.0, places=9)
+        self.assertGreater(len(naps), 1)
+        self.assertTrue(all(nap <= 0.3 for nap in naps))
 
 
 class TestManualPause(unittest.TestCase):
@@ -122,26 +138,31 @@ class TestManualPause(unittest.TestCase):
         c._throttle()  # не должно дёрнуть on_challenge
 
 
+def add_job(manager: JobManager, **fields) -> dict:
+    """Задача в той же форме, что создаёт JobManager, с полями поверх."""
+    job = JobManager._new_job({})
+    job.update(id="j", **fields)
+    manager._jobs["j"] = job
+    return job
+
+
 class TestJobManagerPause(unittest.TestCase):
     def test_request_pause_sets_flag(self):
         m = JobManager()
-        m._jobs["j"] = {"id": "j", "status": "running", "brand": {"url": "/brand/nike"},
-                        "pause_requested": None, "log": []}
+        add_job(m, status="running", brand={"url": "/brand/nike"})
         self.assertTrue(m.request_pause("j"))
         self.assertIsNotNone(m._jobs["j"]["pause_requested"])
         self.assertEqual(m._jobs["j"]["pause_requested"]["reason"], "manual")
 
     def test_request_pause_rejected_when_done(self):
         m = JobManager()
-        m._jobs["j"] = {"id": "j", "status": "done", "pause_requested": None, "log": []}
+        add_job(m, status="done")
         self.assertFalse(m.request_pause("j"))
 
     def test_resume_clears_pause_request(self):
         m = JobManager()
-        job = {"id": "j", "status": "captcha", "paused": True, "captcha": {},
-               "pause_requested": {"reason": "manual"}, "log": [],
-               "_cond": threading.Condition(), "_resume_gen": 0}
-        m._jobs["j"] = job
+        job = add_job(m, status="captcha", paused=True, captcha={},
+                      pause_requested={"reason": "manual"})
         self.assertTrue(m.resume("j"))
         self.assertIsNone(job["pause_requested"])
         self.assertFalse(job["paused"])
@@ -150,17 +171,14 @@ class TestJobManagerPause(unittest.TestCase):
 class TestStopReasonInSnapshot(unittest.TestCase):
     def test_idle_seconds_in_snapshot(self):
         m = JobManager()
-        job = {"id": "j", "status": "running", "last_activity_at": time.time() - 5,
-               "log": [], "pause_requested": None}
-        m._jobs["j"] = job
-        snap = m.snapshot("j")
-        self.assertGreaterEqual(snap["idle_seconds"], 4)
+        add_job(m, status="running", last_activity_at=1000.0)
+        with mock.patch.object(time, "time", return_value=1005.0):
+            snap = m.snapshot("j")
+        self.assertEqual(snap["idle_seconds"], 5.0)
 
     def test_pause_requested_is_bool_in_snapshot(self):
         m = JobManager()
-        job = {"id": "j", "status": "running", "last_activity_at": time.time(),
-               "log": [], "pause_requested": {"reason": "manual"}}
-        m._jobs["j"] = job
+        add_job(m, status="running", pause_requested={"reason": "manual"})
         snap = m.snapshot("j")
         self.assertIs(snap["pause_requested"], True)
 

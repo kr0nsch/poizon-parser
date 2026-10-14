@@ -16,12 +16,15 @@ from .models import Match, Product, SearchItem
 from .sizechart import (
     CM,
     EU,
+    US_MEN,
+    US_WOMEN,
     SizeChart,
     convert_to_eu,
     normalize_scale,
     official_charts,
+    resolve_brand,
 )
-from .sizes import match_size, parse_size_query, scale_priority
+from .sizes import SIZE_EPSILON, match_size, parse_size_query, scale_priority
 
 if TYPE_CHECKING:
     from .catalog import Catalog
@@ -145,8 +148,8 @@ class SizeFinder:
             )
             # В пределах одной шкалы одинаковый размер бывает в разной полноте —
             # там выбор по цене уже корректен.
-            if delta < best_delta - 1e-9 or (
-                abs(delta - best_delta) <= 1e-9 and price < best_price
+            if delta < best_delta - SIZE_EPSILON or (
+                abs(delta - best_delta) <= SIZE_EPSILON and price < best_price
             ):
                 best = Match(
                     product=product,
@@ -210,6 +213,10 @@ class SizeFinder:
                 break
             try:
                 product = self.load_product(item)
+            except (ChallengeRequired, Cancelled):
+                # Проверка сайта и отмена — не беда одной карточки: дальше
+                # сайт блокирует всё подряд, а пользователь уже ответил «стоп».
+                raise
             except PoizonError as exc:
                 self.on_progress(f"[{index}/{len(items)}] пропуск {item.spu_id}: {exc}")
                 continue
@@ -326,6 +333,12 @@ class SizeFinder:
 
         if isinstance(size, str):
             parsed_scale, size_value = parse_size_query(size)
+            # Голое «US» в размере пол не задаёт и не должно перебивать явно
+            # выбранную шкалу «US W»: «-s "US 7" --scale "US W"» — женский 7.
+            if parsed_scale == "US" and normalize_scale(scale) in (
+                US_MEN, US_WOMEN,
+            ):
+                parsed_scale = None
             scale = parsed_scale or scale
         else:
             size_value = float(size)
@@ -407,7 +420,8 @@ class SizeFinder:
         Args:
             limit: сколько моделей брать у одного бренда.
             total_limit: общий потолок выдачи после сортировки по цене.
-            only: ограничить список брендов (имена или ключи таблиц).
+            only: ограничить список брендов — имена, ключи таблиц или их
+                алиасы («nb», «jordan», «adidas originals»).
             on_brand: вызывается после каждого бренда — (имя, его находки).
 
         Бренды, которых нет в каталоге сайта, пропускаются с сообщением
@@ -420,11 +434,16 @@ class SizeFinder:
 
         charts = official_charts(scale, gender)
         if only:
-            wanted = {str(name).strip().lower() for name in only}
-            charts = [
-                chart for chart in charts
-                if chart.key in wanted or chart.name.lower() in wanted
-            ]
+            # Имена сводятся к таблицам тем же резолвером, что и везде:
+            # «nb» → New Balance, «jordan» → сетка Nike.
+            wanted: set[str] = set()
+            for name in only:
+                chart = resolve_brand(name)
+                if chart is None:
+                    self.on_progress(f"нет официальной таблицы для «{name}»")
+                else:
+                    wanted.add(chart.key)
+            charts = [chart for chart in charts if chart.key in wanted]
         if not charts:
             self.on_progress(
                 f"нет брендов с официальной таблицей для шкалы {scale}"
@@ -582,20 +601,37 @@ class SizeFinder:
                     batch = list(enumerate(items[start:start + chunk], start + 1))
                     futures = [pool.submit(handle, i, it) for i, it in batch]
                     for future in as_completed(futures):
+                        if future.cancelled():
+                            continue
                         try:
                             match = future.result()
                         except Cancelled:
+                            match, stop = None, True
+                        except ChallengeRequired:
+                            # Иначе выход из пула дождался бы остальных карточек
+                            # порции, и каждая ещё раз постучалась бы в сайт,
+                            # который уже показывает проверку.
+                            for pending in futures:
+                                pending.cancel()
+                            raise
+                        if match is not None:
+                            with lock:
+                                # Лимит набран раньше, а потоки порции успели
+                                # найти ещё: лишнее не попадает ни в выдачу,
+                                # ни в on_match.
+                                accepted = limit is None or len(matches) < limit
+                                if accepted:
+                                    matches.append(match)
+                                if limit is not None and len(matches) >= limit:
+                                    stop = True
+                            if accepted and on_match:
+                                on_match(match)
+                        if not stop and should_stop and should_stop():
                             stop = True
-                            continue
-                        if match is None:
-                            continue
-                        with lock:
-                            matches.append(match)
-                            reached = limit is not None and len(matches) >= limit
-                        if on_match:
-                            on_match(match)
-                        if reached or (should_stop and should_stop()):
-                            stop = True
+                        if stop:
+                            # Ещё не начатые карточки порции грузить незачем.
+                            for pending in futures:
+                                pending.cancel()
             return matches
         finally:
             if client is not None:
@@ -622,6 +658,9 @@ class SizeFinder:
         for target in urls:
             try:
                 product = self.load_product(target)
+            except (ChallengeRequired, Cancelled):
+                # Как и в find(): капча и отмена прерывают весь обход.
+                raise
             except PoizonError as exc:
                 self.on_progress(f"пропуск {target}: {exc}")
                 continue

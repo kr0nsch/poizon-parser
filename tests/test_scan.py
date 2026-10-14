@@ -4,6 +4,7 @@ import threading
 import unittest
 
 from poizon_parser.catalog import _listing_min_price
+from poizon_parser.client import ChallengeRequired, PoizonError
 from poizon_parser.finder import SizeFinder
 from poizon_parser.models import Match, Product, SearchItem, SizeOffer
 
@@ -39,14 +40,11 @@ class StubFinder(SizeFinder):
         self.on_progress = lambda message: None
 
     def load_product(self, item):
-        from poizon_parser.client import PoizonError
-
         with self._lock:
             self.loaded.append(item.spu_id)
         if item.spu_id in self.fail:
-            # Строка "boom!" → UnicodeEncodeError, если не PoizonError.
+            # «unicode» — не-PoizonError, как кириллица в URL у urllib.
             if self.fail_kind == "unicode":
-                "boom".encode("ascii")  # ok
                 raise UnicodeEncodeError("ascii", "ы", 0, 1, "not ascii")
             raise PoizonError("bad card")
         return self.products[item.spu_id]
@@ -165,6 +163,57 @@ class TestParallelScan(unittest.TestCase):
             ITEMS, 42.0, "EU", workers=3, max_price=10000.0
         )
         self.assertEqual({m.product.spu_id for m in matches}, {1, 3})
+
+    def test_parallel_limit_respected(self):
+        # Регрессия: при workers > 1 после набора лимита в выдачу и в on_match
+        # попадал весь остаток порции (workers=3, limit=1 → 3 модели).
+        many = [
+            SearchItem(spu_id=i, title=str(i), url=f"/product/{i}")
+            for i in range(1, 9)
+        ]
+        products = {item.spu_id: make_product(item.spu_id, 5000.0) for item in many}
+        for workers, limit in ((3, 1), (2, 2), (4, 3)):
+            with self.subTest(workers=workers, limit=limit):
+                finder = StubFinder(products)
+                seen = []
+                matches = finder.scan_products(
+                    many, 42.0, "EU", workers=workers, limit=limit,
+                    on_match=seen.append,
+                )
+                self.assertEqual(len(matches), limit)
+                self.assertEqual(seen, matches)
+
+    def test_challenge_cancels_queued_cards(self):
+        # Капча на одной карточке: обход обрывается, а ещё не начатые
+        # карточки порции не идут к сайту, который уже блокирует.
+        release = threading.Event()
+
+        class SlowFinder(StubFinder):
+            def load_product(self, item):
+                with self._lock:
+                    self.loaded.append(item.spu_id)
+                if item.spu_id == 1:
+                    raise ChallengeRequired("https://x", "captcha")
+                release.wait(5.0)
+                return self.products[item.spu_id]
+
+        many = [
+            SearchItem(spu_id=i, title=str(i), url=f"/product/{i}")
+            for i in range(1, 5)
+        ]
+        products = {item.spu_id: make_product(item.spu_id, 5000.0) for item in many}
+        finder = SlowFinder(products)
+        # Карточки 2 и 3 заняты, пока главный поток разбирает капчу; 4 ждёт
+        # в очереди порции (workers=2 → порция из 4) и должна быть отменена.
+        timer = threading.Timer(0.5, release.set)
+        timer.start()
+        try:
+            with self.assertRaises(ChallengeRequired):
+                finder.scan_products(many, 42.0, "EU", workers=2)
+        finally:
+            release.set()
+            timer.cancel()
+        self.assertNotIn(4, finder.loaded)
 
 
 if __name__ == "__main__":

@@ -15,6 +15,7 @@ from poizon_parser.sizechart import (
     resolve_official_chart,
     sizes_for_foot,
 )
+from poizon_parser.sizes import match_size, parse_size
 
 
 #: Бренды, публикующие собственный замер стопы, — только они годятся для
@@ -147,6 +148,17 @@ class TestOfficialConversion(unittest.TestCase):
         # У Adidas сетка с шагом ⅓ — EU 42⅔ для US 9.
         result = convert_to_eu(US_MEN, 9.0, None, brand="Adidas")
         self.assertAlmostEqual(result.eu, 42 + 2 / 3, places=3)
+        # Округлённая треть таблицы и ярлык SKU «42⅔» — один размер.
+        self.assertIsNotNone(
+            match_size({"EU": "42⅔"}, result.eu, scale="EU")
+        )
+
+    def test_adidas_fraction_label_is_exact_row(self):
+        # EU «42⅔» с ярлыка — это строка 42.6667, а не «ближайшая строка».
+        result = convert_to_eu(EU, parse_size("42⅔"), None, brand="Adidas")
+        self.assertTrue(result.exact)
+        self.assertNotIn("ближайшая", result.note)
+        self.assertEqual(result.foot, 26.3)
 
     def test_women_grid_used_for_us_women(self):
         result = convert_to_eu(US_WOMEN, 9.0, None, brand="Nike")

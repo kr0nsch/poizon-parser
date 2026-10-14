@@ -14,13 +14,17 @@ Excel, HTML-кэша или доступности сети: повторный 
   * PUMA — vn.puma.com (единственная страница PUMA с колонкой JPN/CM)
 
 Запуск: python tools/build_size_charts.py
+Проверка без записи (для CI): python tools/build_size_charts.py --check
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
+import sys
 from pathlib import Path
+from typing import Optional
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "poizon_parser" / "data" / "size_charts.json"
@@ -338,13 +342,70 @@ def validate_charts(charts: dict[str, dict]) -> None:
                 raise ValueError(f"{key}/{gender}: длины стопы не отсортированы")
 
 
-def main() -> int:
-    charts = build_charts()
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(
-        json.dumps(charts, ensure_ascii=False, indent=1) + "\n",
-        encoding="utf-8",
+def render(charts: dict[str, dict]) -> str:
+    """Текст файла. Переводы строк — только LF, на любой ОС одинаково."""
+    return json.dumps(charts, ensure_ascii=False, indent=1) + "\n"
+
+
+def write_charts(charts: dict[str, dict], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # newline="\n": на Windows текстовый режим иначе превратил бы LF в CRLF.
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(render(charts))
+
+
+def check_charts(charts: dict[str, dict], path: Path) -> Optional[str]:
+    """None, если файл совпадает со снимком по данным, иначе причина.
+
+    Сравниваются разобранные JSON-данные, а не байты: CRLF после checkout
+    на Windows расхождением не считается.
+    """
+    try:
+        committed = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return f"файл не найден: {path}"
+    except (OSError, ValueError) as exc:
+        return f"не удалось прочитать {path}: {exc}"
+    if committed != json.loads(render(charts)):
+        return f"{path.name} расходится с таблицами в {Path(__file__).name}"
+    return None
+
+
+def _setup_stdout() -> None:
+    """Кириллица в выводе не роняет скрипт на консоли cp1252 (Windows CI)."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    # Первым делом: иначе кириллица в --help или в отчёте после записи
+    # файла уронила бы скрипт с UnicodeEncodeError.
+    _setup_stdout()
+    parser = argparse.ArgumentParser(
+        description="Собирает poizon_parser/data/size_charts.json."
     )
+    parser.add_argument(
+        "--check", action="store_true",
+        help="ничего не записывать; код 1, если файл устарел",
+    )
+    args = parser.parse_args(argv)
+
+    charts = build_charts()
+    if args.check:
+        problem = check_charts(charts, OUT)
+        if problem:
+            print(
+                f"{problem}\nПересоберите: python tools/build_size_charts.py",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"{OUT.name} актуален")
+        return 0
+
+    write_charts(charts, OUT)
     for key, chart in charts.items():
         print(
             f"{key:<13} муж. {len(chart['men']):>2} строк · "

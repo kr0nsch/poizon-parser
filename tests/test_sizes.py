@@ -2,8 +2,8 @@
 
 import unittest
 
+from poizon_parser.sizechart import CM, MM, US_MEN, US_WOMEN, normalize_scale
 from poizon_parser.sizes import (
-    format_size,
     match_size,
     parse_size,
     parse_size_query,
@@ -48,14 +48,6 @@ class TestParseSize(unittest.TestCase):
         self.assertNotEqual(parse_size("42⅓"), parse_size("42"))
 
 
-class TestFormatSize(unittest.TestCase):
-    def test_integer_has_no_decimals(self):
-        self.assertEqual(format_size(42.0), "42")
-
-    def test_half_size_uses_comma(self):
-        self.assertEqual(format_size(42.5), "42,5")
-
-
 class TestParseSizeQuery(unittest.TestCase):
     def test_bare_number(self):
         self.assertEqual(parse_size_query("42"), (None, 42.0))
@@ -68,6 +60,38 @@ class TestParseSizeQuery(unittest.TestCase):
 
     def test_lowercase_scale_normalised(self):
         self.assertEqual(parse_size_query("us 9,5"), ("US", 9.5))
+
+    def test_us_women_is_not_men(self):
+        # Регрессия: «US W 7» разбиралось как «US» + «W 7» → мужской US 7.
+        for text in ("US W 7", "usw 7", "US-W 7", "USW7", "US Women 7",
+                     "US Женские 7"):
+            with self.subTest(text=text):
+                self.assertEqual(parse_size_query(text), ("US W", 7.0))
+
+    def test_us_men_explicit(self):
+        for text in ("US M 9", "usm 9", "US Men 9", "US Мужские 9"):
+            with self.subTest(text=text):
+                self.assertEqual(parse_size_query(text), ("US M", 9.0))
+
+    def test_metric_prefixes(self):
+        self.assertEqual(parse_size_query("CM 26,5"), ("CM", 26.5))
+        self.assertEqual(parse_size_query("см 26,5"), ("CM", 26.5))
+        self.assertEqual(parse_size_query("mm 265"), ("MM", 265.0))
+        self.assertEqual(parse_size_query("мм 265"), ("MM", 265.0))
+
+    def test_parsed_scales_are_understood_by_sizechart(self):
+        expected = {
+            "US W 7": US_WOMEN, "US M 9": US_MEN, "CM 26": CM, "MM 265": MM,
+        }
+        for text, scale in expected.items():
+            with self.subTest(text=text):
+                parsed, _value = parse_size_query(text)
+                self.assertEqual(normalize_scale(parsed), scale)
+
+    def test_fractional_value_after_prefix(self):
+        scale, value = parse_size_query("EU 42⅔")
+        self.assertEqual(scale, "EU")
+        self.assertAlmostEqual(value, 42 + 2 / 3, places=9)
 
     def test_empty_rejected(self):
         with self.assertRaises(ValueError):
@@ -114,6 +138,20 @@ class TestMatchSize(unittest.TestCase):
 
     def test_tolerance_zero_rejects_neighbour(self):
         self.assertIsNone(match_size({"RU": "42,5"}, 42.0, scale="RU"))
+
+    def test_rounded_third_matches_fraction_label(self):
+        # Таблицы брендов хранят 42⅔ как 42.6667, ярлык SKU — «42⅔».
+        # Это один размер, хотя числа и расходятся в пятом знаке.
+        hit = match_size({"EU": "42⅔"}, 42.6667, scale="EU")
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit[0], "EU")
+        hit = match_size({"EU": "43⅓"}, 43.3333, scale="EU")
+        self.assertIsNotNone(hit)
+
+    def test_rounded_third_does_not_match_neighbour(self):
+        # Допуск на округление не должен склеивать соседние размеры сетки.
+        self.assertIsNone(match_size({"EU": "42½"}, 42.6667, scale="EU"))
+        self.assertIsNone(match_size({"EU": "43"}, 42.6667, scale="EU"))
 
 
 if __name__ == "__main__":
