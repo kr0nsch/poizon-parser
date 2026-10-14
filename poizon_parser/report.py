@@ -258,6 +258,9 @@ def build_report_html(matches: list[dict], meta: dict) -> str:
     eu_line = ", ".join(f"EU {_num(e)}" for e in eus) if eus else ""
 
     size_input = meta.get("size_input") or ""
+    if _is_number(size_input):
+        # «26.5» из веб-формы → «26,5», как во всём остальном выводе.
+        size_input = _num(size_input)
     scale = str(meta.get("scale") or "").upper()
     if scale in ("CM", "СМ") and size_input:
         req = f"длина стопы <b>{esc(str(size_input))} см</b>"

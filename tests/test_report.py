@@ -69,6 +69,12 @@ class TestBuildHtml(unittest.TestCase):
         self.assertNotIn("<script>alert", self.html)
         self.assertIn("&lt;script&gt;", self.html)
 
+    def test_size_from_web_form_uses_decimal_comma(self):
+        # Веб-форма шлёт «26.5»; во всём выводе проекта десятичная запятая.
+        html = build_report_html(MATCHES, {**META, "size_input": "26.5"})
+        self.assertIn("длина стопы <b>26,5 см</b>", html)
+        self.assertNotIn("26.5 см", html)
+
     def test_approx_marker_shown(self):
         self.assertIn("≈ перевод", self.html)
 

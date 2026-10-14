@@ -5,6 +5,7 @@ import {
   deliveryDays,
   fitHint,
   formatMoney,
+  formatQuerySize,
   formatSize,
   poizonSizeLabel,
   slugify,
@@ -38,6 +39,15 @@ describe('format helpers', () => {
     expect(formatSize(42.5)).toBe('42,5')
     expect(formatSize(42)).toBe('42')
     expect(formatSize(null)).toBe('—')
+  })
+
+  it('describes the saved query in Russian number format', () => {
+    expect(formatQuerySize('26.5', 'CM')).toBe('стопа 26,5 см')
+    expect(formatQuerySize(26.5, 'cm')).toBe('стопа 26,5 см')
+    expect(formatQuerySize(265, 'MM')).toBe('стопа 265 мм')
+    expect(formatQuerySize('42', 'EU')).toBe('EU 42')
+    expect(formatQuerySize('7', 'US W')).toBe('US W 7')
+    expect(formatQuerySize('', 'EU')).toBe('')
   })
 
   it('extracts delivery and fit values', () => {

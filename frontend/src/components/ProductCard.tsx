@@ -15,6 +15,7 @@ import {
   fitHint,
   formatMoney,
   formatNumber,
+  formatQuerySize,
   poizonSizeLabel,
   thumbnailUrl,
 } from '../lib/format'
@@ -103,7 +104,8 @@ export const ProductCard = memo(function ProductCard({
         {savedQuery ? (
           <div className="product-card__query">
             <Badge tone="outline">
-              {savedQuery.brand} · {savedQuery.size} {savedQuery.scale}
+              {savedQuery.brand} ·{' '}
+              {formatQuerySize(savedQuery.size, savedQuery.scale)}
             </Badge>
             {pick?.saved_at ? <Badge>{pick.saved_at}</Badge> : null}
           </div>

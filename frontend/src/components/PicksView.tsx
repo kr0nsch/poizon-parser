@@ -16,7 +16,7 @@ import { useRef } from 'react'
 
 import type { Pick } from '../api'
 import { downloadText, rowsToCsv } from '../lib/download'
-import { poizonSizeLabel } from '../lib/format'
+import { formatQuerySize, poizonSizeLabel } from '../lib/format'
 import { useFocusRescue, useListFocusRescue } from '../lib/utils'
 import { EmptyState } from './EmptyState'
 import { ProductCard } from './ProductCard'
@@ -76,7 +76,7 @@ export function PicksView({
     const rows = picks.map((pick) => [
       pick.match.title,
       pick.match.brand,
-      `${pick.query.size} ${pick.query.scale}`,
+      formatQuerySize(pick.query.size, pick.query.scale),
       poizonSizeLabel(pick.match),
       pick.match.price,
       pick.match.delivery,

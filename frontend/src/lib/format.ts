@@ -36,6 +36,19 @@ function formatSizeValue(value: string | number): string {
   return Number.isFinite(parsed) ? formatNumber(parsed) : String(value)
 }
 
+/** Запрос, по которому найдена позиция: «стопа 26,5 см», «EU 42», «US W 7». */
+export function formatQuerySize(
+  size: string | number | null | undefined,
+  scale: string | null | undefined,
+): string {
+  if (size == null || size === '') return ''
+  const value = formatSizeValue(size)
+  const unit = String(scale ?? '').toUpperCase()
+  if (unit === 'CM' || unit === '') return `стопа ${value} см`
+  if (unit === 'MM') return `стопа ${value} мм`
+  return `${unit} ${value}`
+}
+
 export function thumbnailUrl(
   url: string | null | undefined,
 ): string | undefined {
