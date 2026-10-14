@@ -5,7 +5,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { App } from './App'
 import type { Pick, SearchMatch, SearchSnapshot } from './api'
+import { fitHint } from './lib/format'
 import { FORM_STORAGE_KEY } from './lib/storage'
+
+// Считаем рендеры карточек по вызовам fitHint: он выполняется на каждый
+// рендер ProductCard.
+vi.mock('./lib/format', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./lib/format')>()
+  return { ...actual, fitHint: vi.fn(actual.fitHint) }
+})
 
 interface Call {
   method: string
@@ -189,7 +197,7 @@ describe('App', () => {
 
     renderApp()
 
-    expect(searchButton()).toBeEnabled()
+    expect(searchButton()).not.toHaveAttribute('aria-disabled')
   })
 
   it('surfaces a failed brand list without blocking the form', async () => {
@@ -205,7 +213,7 @@ describe('App', () => {
     expect(
       await screen.findByText(/Подсказки брендов не загрузились/),
     ).toHaveTextContent('Сервер недоступен')
-    expect(searchButton()).toBeEnabled()
+    expect(searchButton()).not.toHaveAttribute('aria-disabled')
 
     fail = false
     await user.click(screen.getByRole('button', { name: 'Повторить' }))
@@ -233,7 +241,7 @@ describe('App', () => {
       { timeout: 3_000 },
     )
     expect(searchButton()).toHaveTextContent('Найти')
-    expect(searchButton()).toBeEnabled()
+    expect(searchButton()).not.toHaveAttribute('aria-disabled')
     expect(screen.queryByRole('button', { name: /^Стоп$/ })).toBeNull()
     // Найденное до потери задачи остаётся на экране.
     expect(screen.getByText('Nike Air Max')).toBeInTheDocument()
@@ -374,6 +382,93 @@ describe('App', () => {
     expect(screen.getByRole('link', { name: /Открыть$/ })).toHaveAttribute(
       'href',
       '/result/b/index.html',
+    )
+  })
+
+  it('keeps the newer report when an earlier one finishes after it', async () => {
+    const slowReport = deferred<Response>()
+    let searches = 0
+    installServer({
+      'POST /api/search': () => json({ id: `job-${++searches}` }),
+      'GET /api/search/job-1': () => json(snapshot({ id: 'job-1' })),
+      'GET /api/search/job-2': () =>
+        json(
+          snapshot({
+            id: 'job-2',
+            matches: [match({ spu_id: 3, sku_id: 30, title: 'Nike Dunk' })],
+          }),
+        ),
+      'POST /api/report': ({ body }) =>
+        body?.jobId === 'job-1'
+          ? slowReport.promise
+          : json({
+              dir: 'b',
+              file: 'b/index.html',
+              view: '/result/b/index.html',
+            }),
+    })
+    const { user } = renderApp()
+
+    await startSearch(user)
+    await screen.findByText('Nike Pegasus')
+    await user.click(screen.getByRole('button', { name: /HTML-отчёт/ }))
+
+    await startSearch(user)
+    await screen.findByText('Nike Dunk')
+    await user.click(screen.getByRole('button', { name: /HTML-отчёт/ }))
+    await screen.findByText('Отчёт готов')
+
+    // Отчёт первого поиска приходит последним и не должен затереть свежий.
+    slowReport.resolve(
+      json({ dir: 'a', file: 'a/index.html', view: '/result/a/index.html' }),
+    )
+    await new Promise((done) => setTimeout(done, 50))
+    expect(screen.getByText('Отчёт готов')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /Открыть$/ })).toHaveAttribute(
+      'href',
+      '/result/b/index.html',
+    )
+  })
+
+  it('does not re-render result cards on every poll', async () => {
+    let polls = 0
+    installServer({
+      'POST /api/search': () => json({ id: 'job-1' }),
+      'GET /api/search/job-1': () =>
+        json(
+          snapshot({
+            status: 'running',
+            finished_at: null,
+            activity: `Опрос ${++polls}`,
+          }),
+        ),
+    })
+    const { user } = renderApp()
+
+    await startSearch(user)
+    await screen.findByText('Опрос 1')
+    expect(screen.getByText('Nike Pegasus')).toBeInTheDocument()
+    const renders = vi.mocked(fitHint).mock.calls.length
+
+    // Новый снимок перерисовывает App, но карточки с теми же данными — нет.
+    await screen.findByText('Опрос 2', undefined, { timeout: 3_000 })
+    expect(vi.mocked(fitHint).mock.calls.length).toBe(renders)
+  })
+
+  it('keeps the conversion error hint a readable sentence', async () => {
+    installServer({
+      'GET /api/convert': () =>
+        Promise.reject(new TypeError('Failed to fetch')),
+    })
+    renderApp()
+
+    const hint = await screen.findByText(
+      /Не удалось сверить таблицу размеров/,
+      undefined,
+      { timeout: 4_000 },
+    )
+    expect(hint).toHaveTextContent(
+      /^Не удалось сверить таблицу размеров — поиск работает и без подсказки\. \(Не удалось связаться с сервером\.\)$/,
     )
   })
 

@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
@@ -80,6 +80,48 @@ describe('ResultsView', () => {
     expect(screen.getByRole('button', { name: /JSON/ })).toBeDisabled()
     await user.click(report)
     expect(onCreateReport).not.toHaveBeenCalled()
+  })
+
+  it('keeps focus in the results when a filter hides the focused card', async () => {
+    const pegasus = { ...MATCH, spu_id: 2, sku_id: 20, title: 'Nike Pegasus' }
+    const props = {
+      brand: 'Nike',
+      matches: [MATCH, pegasus],
+      picks: [],
+      reporting: false,
+      savingKeys: new Set<string>(),
+      onFiltersChange: vi.fn(),
+      onPick: vi.fn(),
+      onCreateReport: vi.fn(),
+    }
+    const { rerender } = render(
+      <ResultsView {...props} filters={DEFAULT_RESULTS_FILTERS} />,
+    )
+    screen.getByRole('button', { name: 'В итоги: Nike Pegasus' }).focus()
+
+    rerender(
+      <ResultsView
+        {...props}
+        filters={{ ...DEFAULT_RESULTS_FILTERS, text: 'air' }}
+      />,
+    )
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'В итоги: Nike Air Max' }),
+      ).toHaveFocus(),
+    )
+
+    rerender(
+      <ResultsView
+        {...props}
+        filters={{ ...DEFAULT_RESULTS_FILTERS, text: 'zzz' }}
+      />,
+    )
+    await waitFor(() =>
+      expect(
+        screen.getByRole('heading', { name: /Найдено моделей/ }),
+      ).toHaveFocus(),
+    )
   })
 
   it('reports exactly the filtered rows', async () => {

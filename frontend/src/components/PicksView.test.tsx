@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -75,6 +75,74 @@ describe('PicksView', () => {
     expect(screen.getByText('Nike Air Max')).toBeInTheDocument()
     expect(screen.getByRole('alert')).toHaveTextContent(
       'Не удалось обновить итоги',
+    )
+  })
+
+  it('keeps keyboard focus in the list when a pick is removed', async () => {
+    const dunk: Pick = {
+      ...PICK,
+      id: 'pick-2',
+      match: { ...PICK.match, spu_id: 2, sku_id: 20, title: 'Nike Dunk' },
+    }
+    const props = {
+      loading: false,
+      clearing: false,
+      onRetry: vi.fn(),
+      onRemove: vi.fn(),
+      onClear: vi.fn(),
+    }
+    const { container, rerender } = render(
+      <PicksView {...props} picks={[PICK, dunk]} removingIds={new Set()} />,
+    )
+    const remove = screen.getByRole('button', {
+      name: 'Убрать Nike Air Max из итогов',
+    })
+    remove.focus()
+    rerender(
+      <PicksView
+        {...props}
+        picks={[PICK, dunk]}
+        removingIds={new Set(['pick-1'])}
+      />,
+    )
+    expect(remove).toHaveFocus()
+
+    rerender(<PicksView {...props} picks={[dunk]} removingIds={new Set()} />)
+
+    // Карточка уходит с анимацией; после удаления фокус — на «Убрать»
+    // следующей карточки, а не на <body>.
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Убрать Nike Dunk из итогов' }),
+      ).toHaveFocus(),
+    )
+    expect(screen.queryByText('Nike Air Max')).toBeNull()
+
+    rerender(<PicksView {...props} picks={[]} removingIds={new Set()} />)
+
+    // Последняя позиция убрана — фокус на пустом состоянии.
+    await waitFor(() =>
+      expect(container.querySelector('.empty-state')).toHaveFocus(),
+    )
+  })
+
+  it('moves focus to the empty state after «Очистить всё»', async () => {
+    const props = {
+      loading: false,
+      onRetry: vi.fn(),
+      onRemove: vi.fn(),
+      onClear: vi.fn(),
+      removingIds: new Set<string>(),
+    }
+    const { container, rerender } = render(
+      <PicksView {...props} picks={[PICK]} clearing={false} />,
+    )
+    screen.getByRole('button', { name: /Очистить всё/ }).focus()
+    rerender(<PicksView {...props} picks={[PICK]} clearing />)
+    rerender(<PicksView {...props} picks={[]} clearing={false} />)
+
+    await waitFor(() =>
+      expect(container.querySelector('.empty-state')).toHaveFocus(),
     )
   })
 

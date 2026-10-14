@@ -422,13 +422,16 @@ export function SearchForm({
           />
 
           <div className="search-form__actions">
+            {/* aria-disabled вместо disabled: нативный disabled сбросил бы
+                фокус на <body>, если поиск запустили клавишей Enter. Button
+                сам гасит и нажатия, и неявную отправку формы. */}
             <Button
               ref={submitRef}
               type="submit"
               size="lg"
               loading={starting}
               loadingLabel="Запускаю…"
-              disabled={active}
+              aria-disabled={active || undefined}
             >
               <Search size={17} aria-hidden="true" />
               {active ? 'Ищу…' : 'Найти'}

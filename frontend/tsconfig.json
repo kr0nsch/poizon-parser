@@ -17,7 +17,9 @@
     "jsx": "react-jsx",
     "types": ["vite/client", "@testing-library/jest-dom", "node"],
     "noUncheckedIndexedAccess": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
   },
   "include": ["src", "vite.config.ts"]
 }

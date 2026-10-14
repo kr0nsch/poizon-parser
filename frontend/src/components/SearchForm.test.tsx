@@ -275,6 +275,43 @@ describe('SearchForm', () => {
     expect(screen.getByText('adidas EU 42,5')).toBeInTheDocument()
   })
 
+  it('keeps focus on «Найти» after a keyboard start and ignores repeats', async () => {
+    const user = userEvent.setup()
+    const onSubmit = vi.fn()
+    const props = {
+      brands,
+      brandsLoading: false,
+      conversionLoading: false,
+      form: { ...DEFAULT_SEARCH_FORM, brand: 'Nike', size: '26.5' },
+      onCancel: vi.fn(),
+      onChange: vi.fn(),
+      onSubmit,
+    }
+    const { rerender } = render(
+      <SearchForm {...props} active={false} starting={false} />,
+    )
+    const submit = screen.getByRole('button', { name: 'Найти' })
+    submit.focus()
+    await user.keyboard('{Enter}')
+    expect(onSubmit).toHaveBeenCalledOnce()
+
+    rerender(<SearchForm {...props} active={false} starting />)
+    rerender(<SearchForm {...props} active starting={false} />)
+
+    // Та же кнопка, без нативного disabled: иначе браузер сбросил бы фокус
+    // на <body>.
+    const busy = screen.getByRole('button', { name: 'Ищу…' })
+    expect(busy).toBe(submit)
+    expect(busy).not.toBeDisabled()
+    expect(busy).toHaveAttribute('aria-disabled', 'true')
+    expect(busy).toHaveFocus()
+
+    await user.keyboard('{Enter}')
+    await user.click(busy)
+    await user.type(screen.getByLabelText(/^Бренд/), '{Enter}')
+    expect(onSubmit).toHaveBeenCalledOnce()
+  })
+
   it('returns focus to «Найти» when «Стоп» disappears', async () => {
     const props = {
       brands,

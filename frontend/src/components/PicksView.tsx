@@ -12,10 +12,12 @@ import {
   motion,
   useReducedMotion,
 } from 'motion/react'
+import { useRef } from 'react'
 
 import type { Pick } from '../api'
 import { downloadText, rowsToCsv } from '../lib/download'
 import { poizonSizeLabel } from '../lib/format'
+import { useFocusRescue, useListFocusRescue } from '../lib/utils'
 import { EmptyState } from './EmptyState'
 import { ProductCard } from './ProductCard'
 import { Button } from './ui'
@@ -46,6 +48,17 @@ export function PicksView({
   retrying = false,
 }: PicksViewProps) {
   const reduceMotion = useReducedMotion()
+  // Убранная карточка уносит фокус с собой: он переходит на то же действие
+  // соседней карточки, а если итоги опустели — на пустое состояние.
+  const emptyRef = useRef<HTMLDivElement>(null)
+  const titleRef = useRef<HTMLSpanElement>(null)
+  const rescueCardFocus = useListFocusRescue<HTMLDivElement>(
+    () => emptyRef.current ?? titleRef.current,
+  )
+  const rescueClearFocus = useFocusRescue<HTMLButtonElement>(
+    () => emptyRef.current,
+  )
+
   function exportJson() {
     downloadText(
       'poizon-picks.json',
@@ -132,6 +145,7 @@ export function PicksView({
   if (picks.length === 0) {
     return (
       <EmptyState
+        ref={emptyRef}
         icon={Bookmark}
         title="В итогах пока пусто"
         description="Добавляйте подходящие модели из поиска. Подборка сохраняется локально для этого браузера и переживает перезапуск сервера."
@@ -152,7 +166,12 @@ export function PicksView({
         </div>
       ) : null}
       <div className="picks-toolbar">
-        <span className="picks-toolbar__count" id="picks-title">
+        <span
+          ref={titleRef}
+          className="picks-toolbar__count"
+          id="picks-title"
+          tabIndex={-1}
+        >
           Сохранено позиций: <strong>{picks.length}</strong>
         </span>
         <Button size="sm" variant="secondary" onClick={exportCsv}>
@@ -163,6 +182,7 @@ export function PicksView({
           JSON
         </Button>
         <Button
+          ref={rescueClearFocus}
           size="sm"
           variant="quiet"
           loading={clearing}
@@ -179,6 +199,7 @@ export function PicksView({
             {picks.map((pick, index) => (
               <motion.div
                 key={pick.id}
+                ref={rescueCardFocus}
                 className="product-card-slot"
                 layout="position"
                 initial={

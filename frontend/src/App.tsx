@@ -79,6 +79,12 @@ function errorMessage(error: unknown): string {
   return 'Не удалось выполнить запрос. Проверьте, что локальный сервер запущен.'
 }
 
+/** Текст ошибки как отдельное предложение: с точкой в конце. */
+function asSentence(text: string): string {
+  const trimmed = text.trim()
+  return /[.!?…]$/.test(trimmed) ? trimmed : `${trimmed}.`
+}
+
 function parseFoot(size: string): number {
   return Number(String(size).replace(',', '.'))
 }
@@ -525,9 +531,10 @@ export function App() {
                 role="status"
                 style={{ marginTop: '0.6rem' }}
               >
-                Не удалось сверить таблицу размеров:{' '}
-                {errorMessage(conversionQuery.error)} Поиск работает и без
-                подсказки.
+                {/* Сообщение ошибки — отдельной фразой в скобках: оно бывает
+                    и с точкой, и без, и не должно рвать основное предложение. */}
+                Не удалось сверить таблицу размеров — поиск работает и без
+                подсказки. ({asSentence(errorMessage(conversionQuery.error))})
               </p>
             ) : null}
 
@@ -567,7 +574,9 @@ export function App() {
                 }
                 savingKeys={savingKeys}
                 onFiltersChange={setResultsFilters}
-                onPick={(match) => addPickMutation.mutate(match)}
+                // mutate стабилен между рендерами: карточки (memo) не
+                // перерисовываются на каждом опросе поиска.
+                onPick={addPickMutation.mutate}
                 onCreateReport={(matches, embed) => {
                   if (!jobId) return
                   reportMutation.mutate({
@@ -611,7 +620,7 @@ export function App() {
               clearing={clearPicksMutation.isPending}
               removingIds={removingIds}
               onRetry={() => void picksQuery.refetch()}
-              onRemove={(id) => removePickMutation.mutate(id)}
+              onRemove={removePickMutation.mutate}
               onClear={() => clearPicksMutation.mutate()}
             />
           </>

@@ -12,7 +12,7 @@ import {
   motion,
   useReducedMotion,
 } from 'motion/react'
-import { useMemo, type Dispatch, type SetStateAction } from 'react'
+import { useMemo, useRef, type Dispatch, type SetStateAction } from 'react'
 
 import {
   matchKey,
@@ -22,6 +22,7 @@ import {
 } from '../api'
 import { downloadText, rowsToCsv } from '../lib/download'
 import { deliveryDays, poizonSizeLabel, slugify } from '../lib/format'
+import { useListFocusRescue } from '../lib/utils'
 import { EmptyState } from './EmptyState'
 import { ProductCard } from './ProductCard'
 import { Button, Checkbox, Field, Select, Switch } from './ui'
@@ -87,6 +88,12 @@ export function ResultsView({
 }: ResultsViewProps) {
   const reduceMotion = useReducedMotion()
   const { sort, text, maxPrice, exactOnly, fastOnly, embed } = filters
+  // Карточка, отсеянная фильтром, уносит фокус с собой: он переходит на то
+  // же действие соседней карточки, а без карточек — на заголовок раздела.
+  const headingRef = useRef<HTMLHeadingElement>(null)
+  const rescueCardFocus = useListFocusRescue<HTMLDivElement>(
+    () => headingRef.current,
+  )
 
   function update(patch: Partial<ResultsFilters>) {
     onFiltersChange((current) => ({ ...current, ...patch }))
@@ -187,7 +194,9 @@ export function ResultsView({
     <section aria-labelledby="results-title">
       <div className="section-heading">
         <div>
-          <h2 id="results-title">Найдено моделей: {matches.length}</h2>
+          <h2 ref={headingRef} id="results-title" tabIndex={-1}>
+            Найдено моделей: {matches.length}
+          </h2>
           <p>Фильтры и сортировка применяются и к выгрузке, и к HTML-отчёту.</p>
         </div>
         <div className="toolbar">
@@ -395,6 +404,7 @@ export function ResultsView({
               {filtered.map((match, index) => (
                 <motion.div
                   key={matchKey(match)}
+                  ref={rescueCardFocus}
                   className="product-card-slot"
                   layout="position"
                   initial={
