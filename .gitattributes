@@ -1,0 +1,15 @@
+# Единые LF-окончания строк в репозитории на любой ОС.
+* text=auto eol=lf
+
+# Бинарные файлы не трогаем.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+
+# Lock-файл генерируется pnpm — в диффах он только шумит.
+frontend/pnpm-lock.yaml -diff linguist-generated
+poizon_parser/data/size_charts.json linguist-generated

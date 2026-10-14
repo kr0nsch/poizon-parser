@@ -27,3 +27,6 @@ frontend/.env.local
 Thumbs.db
 *.swp
 *.tmp
+*.log
+.idea/
+.vscode/
