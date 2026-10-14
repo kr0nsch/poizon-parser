@@ -64,15 +64,18 @@ Russian.
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/progress-light.webp" alt="Ход поиска: проверено 9 из 20 карточек, живой журнал и счётчик найденного">
-      <p align="center"><sub><b>Поиск идёт:</b> прогресс, оценка времени и живой монитор —<br>видно, что парсер делает прямо сейчас</sub></p>
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/images/progress-dark.webp">
+        <img src="docs/images/progress-light.webp" alt="Ход поиска: проверено 9 из 20 карточек, живой журнал и счётчик найденного">
+      </picture>
+      <p align="center"><sub><b>Поиск идёт:</b> прогресс, оценка времени и живой монитор — видно, что парсер делает прямо сейчас</sub></p>
     </td>
     <td width="50%" valign="top">
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="docs/images/results-dark.webp">
         <img src="docs/images/results-light.webp" alt="Поиск завершён: 15 моделей Nike в EU 43 с фото, ярлыком POIZON, ценой и сроком доставки">
       </picture>
-      <p align="center"><sub><b>Результаты:</b> только размеры в наличии, цена именно вашего размера,<br>фильтры, сортировка и выгрузка в CSV, JSON и HTML</sub></p>
+      <p align="center"><sub><b>Результаты:</b> только размеры в наличии, цена именно вашего размера, фильтры, сортировка и выгрузка в CSV, JSON и HTML</sub></p>
     </td>
   </tr>
 </table>
