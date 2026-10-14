@@ -8,12 +8,6 @@ export function Input({ className, ...props }: InputProps) {
   return <input className={cn('ui-input', className)} {...props} />
 }
 
-export type TextareaProps = ComponentPropsWithRef<'textarea'>
-
-export function Textarea({ className, ...props }: TextareaProps) {
-  return <textarea className={cn('ui-textarea', className)} {...props} />
-}
-
 export type FieldLabelProps = ComponentPropsWithRef<'label'>
 
 export function FieldLabel({ className, ...props }: FieldLabelProps) {

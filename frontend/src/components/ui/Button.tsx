@@ -1,4 +1,4 @@
-import type { ComponentPropsWithRef, ReactNode } from 'react'
+import type { ComponentPropsWithRef, MouseEvent, ReactNode } from 'react'
 
 import { cn } from '../../lib/utils'
 
@@ -15,16 +15,30 @@ export interface ButtonProps extends ComponentPropsWithRef<'button'> {
 }
 
 export function Button({
+  'aria-disabled': ariaDisabled,
   children,
   className,
   disabled,
   loading = false,
   loadingLabel,
+  onClick,
   size = 'md',
   type = 'button',
   variant = 'primary',
   ...props
 }: ButtonProps) {
+  // Загрузка и aria-disabled не ставят нативный disabled: браузер снял бы
+  // фокус с нажатой кнопки. Нажатия в этом состоянии гасим сами.
+  const blocked = loading || ariaDisabled === true || ariaDisabled === 'true'
+
+  function handleClick(event: MouseEvent<HTMLButtonElement>) {
+    if (blocked) {
+      event.preventDefault()
+      return
+    }
+    onClick?.(event)
+  }
+
   return (
     <button
       className={cn(
@@ -34,8 +48,10 @@ export function Button({
         className,
       )}
       type={type}
-      disabled={disabled || loading}
+      disabled={disabled}
+      aria-disabled={blocked || undefined}
       aria-busy={loading || undefined}
+      onClick={handleClick}
       {...props}
     >
       {loading && <span className="ui-button__spinner" aria-hidden="true" />}

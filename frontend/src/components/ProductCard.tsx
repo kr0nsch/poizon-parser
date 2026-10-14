@@ -8,9 +8,9 @@ import {
   Trash2,
 } from 'lucide-react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
-import { useId, useState } from 'react'
+import { memo, useId, useState } from 'react'
 
-import type { Pick, PickQuery, SearchMatch } from '../api'
+import type { Pick, SearchMatch } from '../api'
 import {
   fitHint,
   formatMoney,
@@ -28,24 +28,25 @@ interface ProductCardProps {
   onRemove?: (id: string) => void
   pick?: Pick
   picked?: boolean
-  query?: PickQuery
   removing?: boolean
   saving?: boolean
 }
 
-export function ProductCard({
+// Опрос поиска раз в секунду перерисовывает список результатов; memo
+// пропускает карточки, чьи пропсы не изменились (match сохраняет ссылку
+// благодаря structural sharing в TanStack Query).
+export const ProductCard = memo(function ProductCard({
   match,
   onPick,
   onRemove,
   pick,
   picked = false,
-  query,
   removing = false,
   saving = false,
 }: ProductCardProps) {
   const image = thumbnailUrl(match.image)
   const fit = fitHint(match.size_tip)
-  const savedQuery = query ?? pick?.query
+  const savedQuery = pick?.query
   const shouldReduceMotion = useReducedMotion()
   const [detailsOpen, setDetailsOpen] = useState(false)
   const detailsId = useId()
@@ -137,10 +138,14 @@ export function ProductCard({
           ) : null}
         </div>
 
+        {/* В списке из десятков карточек одинаковые «Детали», «Открыть» и
+            «В итоги» неразличимы для скринридера: в имя добавляем модель,
+            начиная с видимой подписи. */}
         <Button
           id={detailsButtonId}
           size="sm"
           variant="quiet"
+          aria-label={`Детали: ${match.title}`}
           aria-expanded={detailsOpen}
           aria-controls={detailsId}
           onClick={() => setDetailsOpen((open) => !open)}
@@ -217,6 +222,7 @@ export function ProductCard({
             href={match.url}
             target="_blank"
             rel="noreferrer"
+            aria-label={`Открыть ${match.title} на POIZON`}
           >
             Открыть
             <ExternalLink size={14} aria-hidden="true" />
@@ -234,10 +240,13 @@ export function ProductCard({
               Убрать
             </Button>
           ) : (
+            // aria-disabled вместо disabled: после сохранения фокус остаётся
+            // на кнопке, а Button сам гасит повторные нажатия.
             <Button
               size="sm"
               variant={picked ? 'system' : 'primary'}
-              disabled={picked}
+              aria-disabled={picked || undefined}
+              aria-label={`${picked ? 'В итогах' : 'В итоги'}: ${match.title}`}
               loading={saving}
               onClick={() => onPick?.(match)}
             >
@@ -253,4 +262,4 @@ export function ProductCard({
       </div>
     </MotionCard>
   )
-}
+})

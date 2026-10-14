@@ -15,12 +15,7 @@
     "isolatedModules": true,
     "noEmit": true,
     "jsx": "react-jsx",
-    "types": [
-      "vite/client",
-      "vitest/globals",
-      "@testing-library/jest-dom",
-      "node"
-    ],
+    "types": ["vite/client", "@testing-library/jest-dom", "node"],
     "noUncheckedIndexedAccess": true,
     "noFallthroughCasesInSwitch": true
   },

@@ -231,8 +231,7 @@
 }
 
 .ui-input,
-.ui-select,
-.ui-textarea {
+.ui-select {
   transition:
     border-color var(--motion-duration-base) var(--motion-ease-soft),
     background-color var(--motion-duration-base) var(--motion-ease-soft),
@@ -241,8 +240,7 @@
 }
 
 .ui-input:focus-visible,
-.ui-select:focus-visible,
-.ui-textarea:focus-visible {
+.ui-select:focus-visible {
   box-shadow:
     0 0 0 3px color-mix(in srgb, var(--ui-focus) 9%, transparent),
     var(--ui-shadow-soft);
@@ -464,8 +462,7 @@
   }
 
   .ui-input:hover:not(:disabled),
-  .ui-select:hover:not(:disabled),
-  .ui-textarea:hover:not(:disabled) {
+  .ui-select:hover:not(:disabled) {
     transform: translate3d(0, -1px, 0);
   }
 
@@ -669,7 +666,6 @@
   .ui-field__label,
   .ui-input,
   .ui-select,
-  .ui-textarea,
   .ui-checkbox__box::after,
   .ui-select__chevron,
   .product-card,

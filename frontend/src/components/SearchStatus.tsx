@@ -8,10 +8,11 @@ import {
   Square,
 } from 'lucide-react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type { SearchSnapshot } from '../api'
 import { formatActivityAge, formatDuration } from '../lib/format'
+import { useFocusRescue } from '../lib/utils'
 import { Badge, Button, Card, CardContent, Progress } from './ui'
 
 const MotionStatusCard = motion.create(Card)
@@ -26,10 +27,16 @@ interface SearchStatusProps {
 
 function statusCopy(
   job: SearchSnapshot,
-  nowSeconds: number,
+  serverNow: number,
   cooldownLeft: number,
 ) {
   const brand = job.brand?.name ?? 'бренда'
+  if (job.status === 'running' && job.phase === 'brand') {
+    return {
+      title: 'Ищу бренд…',
+      meta: 'Сверяю название с каталогом сайта',
+    }
+  }
   if (job.status === 'running' && job.phase === 'collect') {
     return {
       title: `Собираю каталог ${brand}`,
@@ -37,7 +44,7 @@ function statusCopy(
     }
   }
   if (job.status === 'running') {
-    const spent = nowSeconds - job.started_at
+    const spent = serverNow - job.started_at
     const estimate =
       job.checked > 0 && job.total > job.checked
         ? (spent / job.checked) * (job.total - job.checked)
@@ -87,9 +94,28 @@ export function SearchStatus({
   onPause,
   onResume,
 }: SearchStatusProps) {
-  const [now, setNow] = useState(() => Date.now())
+  // Момент прихода снимка по локальным часам. idle_seconds сервер считает
+  // своими часами, а дальше прибавляем только локально прошедшее время —
+  // рассинхрон часов браузера и сервера не искажает «застой» и таймеры.
+  const [received, setReceived] = useState(() => ({ job, at: Date.now() }))
+  const [now, setNow] = useState(received.at)
+  if (received.job !== job) {
+    const at = Date.now()
+    setReceived({ job, at })
+    setNow(at)
+  }
   const reduceMotion = useReducedMotion()
   const active = job.status === 'running' || job.status === 'captcha'
+  const contentRef = useRef<HTMLDivElement>(null)
+  // Кнопки карточки исчезают при смене статуса (пауза → капча → работа);
+  // фокус с исчезнувшей уходит на главное действие или на сводку.
+  const rescueFocus = useFocusRescue<HTMLElement>(() => {
+    const content = contentRef.current
+    return (
+      content?.querySelector<HTMLElement>('[data-status-action]') ??
+      content?.querySelector<HTMLElement>('.status-summary')
+    )
+  })
 
   useEffect(() => {
     if (!active) return
@@ -97,15 +123,18 @@ export function SearchStatus({
     return () => window.clearInterval(timer)
   }, [active])
 
-  const nowSeconds = now / 1_000
-  const cooldownLeft = Math.max(
-    0,
-    Math.ceil((job.cooldown_until ?? 0) - nowSeconds),
-  )
-  const idleSeconds = Math.max(
-    job.idle_seconds ?? 0,
-    nowSeconds - job.last_activity_at,
-  )
+  const elapsed = Math.max(0, (now - received.at) / 1_000)
+  const idleSeconds = active
+    ? Math.max(0, (job.idle_seconds ?? 0) + elapsed)
+    : 0
+  // «Сейчас» по часам сервера: все метки времени в снимке серверные.
+  const serverNow =
+    active && Number.isFinite(job.idle_seconds)
+      ? job.last_activity_at + job.idle_seconds + elapsed
+      : now / 1_000
+  const cooldownLeft = active
+    ? Math.max(0, Math.ceil((job.cooldown_until ?? 0) - serverNow))
+    : 0
   const stalled =
     job.status === 'running' && cooldownLeft === 0 && idleSeconds > 20
   const heartState =
@@ -114,17 +143,34 @@ export function SearchStatus({
       : cooldownLeft > 0 || idleSeconds > 6
         ? 'slow'
         : 'live'
-  const copy = statusCopy(job, nowSeconds, cooldownLeft)
+  const copy = statusCopy(job, serverNow, cooldownLeft)
+  const searchingBrand = active && job.phase === 'brand'
+  const collecting = active && job.phase === 'collect'
   const progressValue =
-    job.phase === 'collect' && active
+    searchingBrand || collecting
       ? null
       : job.total > 0
         ? Math.round((job.checked / job.total) * 100)
         : 0
   const logTail = useMemo(() => job.log.slice(-6).join('\n'), [job.log])
   const captchaSeconds = job.captcha?.since
-    ? Math.max(0, nowSeconds - job.captcha.since)
+    ? Math.max(0, serverNow - job.captcha.since)
     : 0
+  const pausePending = job.status === 'running' && job.pause_requested
+
+  // Постоянные live-области вне анимации: заменяемые на каждое изменение
+  // элементы скринридеры часто не озвучивают. Пока поиск идёт, читаем только
+  // заголовок, а не счётчик, который меняется каждую секунду.
+  const urgent = job.status === 'captcha' || job.status === 'error'
+  const fullCopy = `${copy.title}. ${copy.meta}`
+  const announcement = urgent
+    ? ''
+    : pausePending
+      ? 'Встаю на паузу после текущих запросов'
+      : job.status === 'running'
+        ? copy.title
+        : fullCopy
+  const alertText = urgent ? fullCopy : ''
 
   return (
     <MotionStatusCard
@@ -144,8 +190,14 @@ export function SearchStatus({
             : 'system'
       }
     >
-      <CardContent>
-        <div className="status-summary">
+      <CardContent ref={contentRef}>
+        <p className="ui-sr-only" role="status" aria-atomic="true">
+          {announcement}
+        </p>
+        <p className="ui-sr-only" role="alert" aria-atomic="true">
+          {alertText}
+        </p>
+        <div className="status-summary" tabIndex={-1}>
           <AnimatePresence initial={false} mode="popLayout">
             <motion.div
               key={`${job.status}-${job.phase}-${copy.title}`}
@@ -154,14 +206,7 @@ export function SearchStatus({
               exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -4 }}
               layout
             >
-              <p
-                className="status-summary__title"
-                role="status"
-                aria-live="polite"
-                aria-atomic="true"
-              >
-                {copy.title}
-              </p>
+              <p className="status-summary__title">{copy.title}</p>
               <p className="status-summary__meta">{copy.meta}</p>
             </motion.div>
           </AnimatePresence>
@@ -193,9 +238,11 @@ export function SearchStatus({
           value={progressValue}
           showValue={progressValue != null}
           label={
-            job.phase === 'collect' && active
-              ? 'Собираю каталог…'
-              : 'Проверка карточек'
+            job.phase === 'brand'
+              ? 'Поиск бренда'
+              : collecting
+                ? 'Собираю каталог…'
+                : 'Проверка карточек'
           }
           tone={job.status === 'captcha' ? 'warning' : 'system'}
         />
@@ -213,19 +260,27 @@ export function SearchStatus({
               <span>· запросов: {job.active_requests}</span>
             ) : null}
             <span>· активность {formatActivityAge(idleSeconds)}</span>
+            {pausePending ? (
+              <span>· встаю на паузу после текущих запросов</span>
+            ) : null}
             <span className="status-monitor__action">
               {job.status === 'running' ? (
+                // Одна и та же кнопка: пока пауза не наступила, её можно
+                // отозвать — continue на сервере снимает и ручной запрос.
                 <Button
+                  ref={rescueFocus}
+                  data-status-action=""
                   size="sm"
                   variant="quiet"
-                  disabled={Boolean(job.pause_requested)}
                   loading={actionPending}
-                  onClick={onPause}
+                  onClick={pausePending ? onResume : onPause}
                 >
-                  <Pause size={14} aria-hidden="true" />
-                  {job.pause_requested
-                    ? 'Встаю на паузу…'
-                    : 'Пауза / пройти проверку'}
+                  {pausePending ? (
+                    <Play size={14} aria-hidden="true" />
+                  ) : (
+                    <Pause size={14} aria-hidden="true" />
+                  )}
+                  {pausePending ? 'Отменить паузу' : 'Пауза / пройти проверку'}
                 </Button>
               ) : null}
             </span>
@@ -296,6 +351,7 @@ export function SearchStatus({
               <div className="ui-cluster">
                 {job.captcha?.url ? (
                   <a
+                    ref={rescueFocus}
                     className="ui-button ui-button--secondary ui-button--sm"
                     href={job.captcha.url}
                     target="_blank"
@@ -305,11 +361,22 @@ export function SearchStatus({
                     <ExternalLink size={14} aria-hidden="true" />
                   </a>
                 ) : null}
-                <Button size="sm" loading={actionPending} onClick={onResume}>
+                <Button
+                  ref={rescueFocus}
+                  data-status-action=""
+                  size="sm"
+                  loading={actionPending}
+                  onClick={onResume}
+                >
                   <Play size={14} aria-hidden="true" />
                   Продолжить
                 </Button>
-                <Button size="sm" variant="quiet" onClick={onCancel}>
+                <Button
+                  ref={rescueFocus}
+                  size="sm"
+                  variant="quiet"
+                  onClick={onCancel}
+                >
                   <Square size={13} aria-hidden="true" />
                   Отменить
                 </Button>

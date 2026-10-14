@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -170,9 +170,129 @@ describe('SearchForm', () => {
 
     expect(optionValues()).toEqual(['Nike'])
     expect(screen.getByLabelText(/^Бренд/)).toHaveValue('Puma')
-    expect(screen.getByText(/«Puma» остаётся выбранным/i)).toBeInTheDocument()
+    expect(
+      screen.getByText(/«Puma» остаётся выбранным/i, {
+        selector: '.official-brand-filter__notice',
+      }),
+    ).toBeInTheDocument()
+    expect(
+      screen
+        .getAllByRole('status')
+        .some((region) =>
+          region.textContent?.startsWith('«Puma» остаётся выбранным'),
+        ),
+    ).toBe(true)
 
     await user.click(screen.getByRole('button', { name: 'Найти' }))
     expect(onSubmit).toHaveBeenCalledOnce()
+  })
+
+  it('announces the converted size through a persistent live region', () => {
+    const props = {
+      active: false,
+      brands,
+      brandsLoading: false,
+      form: { ...DEFAULT_SEARCH_FORM, brand: 'Nike', size: '26.5' },
+      onCancel: vi.fn(),
+      onChange: vi.fn(),
+      onSubmit: vi.fn(),
+      starting: false,
+    }
+    const { rerender } = render(<SearchForm {...props} conversionLoading />)
+    const regions = screen.getAllByRole('status')
+    expect(regions.every((region) => region.textContent === '')).toBe(true)
+
+    rerender(
+      <SearchForm
+        {...props}
+        conversionLoading={false}
+        conversion={{
+          sizes: {
+            brand: 'Nike',
+            gender: 'men',
+            requested_foot: 26.5,
+            exact: false,
+            eu: 42,
+            us: 8.5,
+            uk: 7.5,
+            cm: 26.5,
+          },
+          compare: [],
+        }}
+      />,
+    )
+
+    // Те же узлы, что и до ответа: меняется только их текст.
+    expect(screen.getAllByRole('status')).toEqual(regions)
+    expect(regions.map((region) => region.textContent).filter(Boolean)).toEqual(
+      ['Ваш размер в Nike: EU 42, US 8,5, UK 7,5, приблизительно'],
+    )
+  })
+
+  it('asks for a brand instead of quoting an empty one', () => {
+    render(
+      <SearchForm
+        active={false}
+        brands={brands}
+        brandsLoading={false}
+        conversion={{
+          sizes: null,
+          compare: [
+            {
+              brand: 'Nike',
+              gender: 'men',
+              requested_foot: 26.5,
+              exact: true,
+              eu: 42,
+            },
+            {
+              brand: 'adidas',
+              gender: 'men',
+              requested_foot: 26.5,
+              exact: true,
+              eu: 42.5,
+            },
+          ],
+        }}
+        conversionLoading={false}
+        form={{ ...DEFAULT_SEARCH_FORM, brand: '  ', size: '26.5' }}
+        onCancel={vi.fn()}
+        onChange={vi.fn()}
+        onSubmit={vi.fn()}
+        starting={false}
+      />,
+    )
+
+    expect(screen.queryByText(/«\s*»/)).not.toBeInTheDocument()
+    expect(
+      screen.getByText(
+        'Укажите бренд, чтобы перевести размер по его таблице.',
+        {
+          selector: '.size-preview span',
+        },
+      ),
+    ).toBeInTheDocument()
+    expect(screen.getByText('adidas EU 42,5')).toBeInTheDocument()
+  })
+
+  it('returns focus to «Найти» when «Стоп» disappears', async () => {
+    const props = {
+      brands,
+      brandsLoading: false,
+      conversionLoading: false,
+      form: { ...DEFAULT_SEARCH_FORM, brand: 'Nike', size: '26.5' },
+      onCancel: vi.fn(),
+      onChange: vi.fn(),
+      onSubmit: vi.fn(),
+      starting: false,
+    }
+    const { rerender } = render(<SearchForm {...props} active />)
+    screen.getByRole('button', { name: 'Стоп' }).focus()
+
+    rerender(<SearchForm {...props} active={false} />)
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Найти' })).toHaveFocus(),
+    )
   })
 })

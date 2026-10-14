@@ -1,19 +1,24 @@
 import { Moon, Sun } from 'lucide-react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
-import { useState } from 'react'
 
 import { Button } from './ui'
-import { applyTheme, getInitialTheme, type Theme } from '../lib/storage'
+import { applyTheme, type Theme } from '../lib/storage'
 
-export function ThemeToggle() {
-  const [theme, setTheme] = useState<Theme>(getInitialTheme)
+interface ThemeToggleProps {
+  // Тему хранит AppShell: переключателей два (боковая панель и мобильная
+  // шапка), и оба должны показывать одно и то же значение.
+  onThemeChange: (theme: Theme) => void
+  theme: Theme
+}
+
+export function ThemeToggle({ onThemeChange, theme }: ThemeToggleProps) {
   const reduceMotion = useReducedMotion()
 
   function toggleTheme() {
     const nextTheme = theme === 'dark' ? 'light' : 'dark'
     const update = () => {
       applyTheme(nextTheme)
-      setTheme(nextTheme)
+      onThemeChange(nextTheme)
     }
     if (!reduceMotion && typeof document.startViewTransition === 'function') {
       const transition = document.startViewTransition(update)

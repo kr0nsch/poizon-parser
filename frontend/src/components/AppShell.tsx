@@ -1,7 +1,8 @@
 import { BookmarkCheck, ExternalLink, Footprints, Search } from 'lucide-react'
 import { motion } from 'motion/react'
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 
+import { getInitialTheme, type Theme } from '../lib/storage'
 import { ThemeToggle } from './ThemeToggle'
 
 export type AppView = 'search' | 'picks'
@@ -108,6 +109,10 @@ export function AppShell({
   picksCount,
   title,
 }: AppShellProps) {
+  // Одно состояние на оба переключателя темы: скрытый CSS-ом не должен
+  // отставать от видимого после смены ширины окна.
+  const [theme, setTheme] = useState<Theme>(getInitialTheme)
+
   return (
     <div className="app-shell">
       <aside className="app-sidebar">
@@ -131,7 +136,7 @@ export function AppShell({
             Открыть POIZON
             <ExternalLink size={13} aria-hidden="true" />
           </a>
-          <ThemeToggle />
+          <ThemeToggle theme={theme} onThemeChange={setTheme} />
         </div>
       </aside>
 
@@ -139,7 +144,7 @@ export function AppShell({
         <header className="mobile-header">
           <div className="mobile-header__top">
             <BrandLockup />
-            <ThemeToggle />
+            <ThemeToggle theme={theme} onThemeChange={setTheme} />
           </div>
           <Navigation
             mobile

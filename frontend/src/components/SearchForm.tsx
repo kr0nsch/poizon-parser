@@ -1,10 +1,11 @@
 import { AlertTriangle, Ruler, Search, Square } from 'lucide-react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
-import { useMemo, useState, type FormEvent } from 'react'
+import { useMemo, useRef, useState, type FormEvent } from 'react'
 
 import type { Brand, ConversionResponse } from '../api'
 import { formatNumber } from '../lib/format'
 import type { StoredSearchForm } from '../lib/storage'
+import { useFocusRescue } from '../lib/utils'
 import {
   Button,
   Checkbox,
@@ -80,6 +81,28 @@ export function SearchForm({
     convertedSize?.foot !== undefined &&
     convertedSize.cm !== undefined &&
     Math.abs(convertedSize.foot - convertedSize.cm) > 0.05
+  const brandName = form.brand.trim()
+  const noChartText = brandName
+    ? `Для «${brandName}» точной таблицы нет — используем общую сетку при поиске.`
+    : 'Укажите бренд, чтобы перевести размер по его таблице.'
+  const brandNotice =
+    form.officialBrandsOnly &&
+    selectedBrand &&
+    !selectedBrand.has_official_size_chart
+      ? `«${selectedBrand.name}» остаётся выбранным, но для него будет использована общая размерная сетка.`
+      : ''
+  // Текст для постоянной live-области: видимые блоки появляются и исчезают
+  // с анимацией, а только что вставленные live-области скринридеры часто
+  // не озвучивают.
+  const sizeAnnouncement = convertedSize
+    ? `Ваш размер в ${convertedSize.brand}: EU ${formatNumber(convertedSize.eu)}, US ${formatNumber(convertedSize.us)}, UK ${formatNumber(convertedSize.uk)}${convertedSize.exact ? '' : ', приблизительно'}`
+    : conversion?.compare.length
+      ? noChartText
+      : ''
+
+  // «Стоп» исчезает после отмены; фокус с него уходит на «Найти».
+  const submitRef = useRef<HTMLButtonElement>(null)
+  const stopRef = useFocusRescue<HTMLButtonElement>(() => submitRef.current)
 
   function update<Key extends keyof StoredSearchForm>(
     key: Key,
@@ -210,21 +233,21 @@ export function SearchForm({
               : `${officialBrands.length} из ${brands.length}`}
           </motion.span>
           <AnimatePresence initial={false}>
-            {form.officialBrandsOnly &&
-            selectedBrand &&
-            !selectedBrand.has_official_size_chart ? (
+            {brandNotice ? (
               <motion.p
+                key="brand-notice"
                 className="official-brand-filter__notice"
-                role="status"
                 initial={{ opacity: 0, height: 0 }}
                 animate={{ opacity: 1, height: 'auto' }}
                 exit={{ opacity: 0, height: 0 }}
               >
-                «{selectedBrand.name}» остаётся выбранным, но для него будет
-                использована общая размерная сетка.
+                {brandNotice}
               </motion.p>
             ) : null}
           </AnimatePresence>
+          <p className="ui-sr-only" role="status" aria-atomic="true">
+            {brandNotice}
+          </p>
         </div>
 
         <AnimatePresence initial={false}>
@@ -260,7 +283,6 @@ export function SearchForm({
             <motion.div
               key="size-preview"
               className="size-preview motion-collapse"
-              aria-live="polite"
               initial={revealInitial}
               animate={{ opacity: 1, height: 'auto', y: 0 }}
               exit={revealExit}
@@ -297,10 +319,7 @@ export function SearchForm({
                   </span>
                 </>
               ) : (
-                <span>
-                  Для «{form.brand}» точной таблицы нет — используем общую сетку
-                  при поиске.
-                </span>
+                <span>{noChartText}</span>
               )}
               {conversion.compare.length > 1 ? (
                 <div className="size-preview__compare">
@@ -322,7 +341,6 @@ export function SearchForm({
             <motion.p
               key="size-loading"
               className="ui-field__hint motion-loading-line"
-              aria-live="polite"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
@@ -331,6 +349,9 @@ export function SearchForm({
             </motion.p>
           ) : null}
         </AnimatePresence>
+        <p className="ui-sr-only" role="status" aria-atomic="true">
+          {sizeAnnouncement}
+        </p>
 
         <AnimatePresence initial={false}>
           {form.depth === '0' ? (
@@ -402,6 +423,7 @@ export function SearchForm({
 
           <div className="search-form__actions">
             <Button
+              ref={submitRef}
               type="submit"
               size="lg"
               loading={starting}
@@ -413,6 +435,7 @@ export function SearchForm({
             </Button>
             {active ? (
               <Button
+                ref={stopRef}
                 type="button"
                 size="lg"
                 variant="secondary"

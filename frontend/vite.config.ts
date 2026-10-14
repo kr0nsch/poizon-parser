@@ -22,6 +22,9 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
-    css: true,
+    // Тесты импортируют describe/it/expect из vitest явно — без глобалов.
+    globals: false,
+    // Ни один тест не зависит от стилей: не гоняем Tailwind на каждый файл.
+    css: false,
   },
 })
