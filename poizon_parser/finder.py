@@ -60,7 +60,8 @@ def out_of_table_message(
         return None
     canonical = normalize_scale(scale) or scale
     if canonical == MM:
-        canonical = CM
+        # Таблица хранит длину стопы в сантиметрах: сравниваем в них же.
+        canonical, value = CM, value / 10
     chart = resolve_brand(brand)
     values = chart.published_values(canonical, gender) if chart is not None else []
     unit = " см" if canonical == CM else ""

@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError, type SearchSnapshot } from '../api'
-import { fetchSearchSnapshot, isPermanentPollError } from './useSearchJob'
+import {
+  fetchSearchSnapshot,
+  isPermanentPollError,
+  shouldRetryPoll,
+} from './useSearchJob'
 
 function snapshot(overrides: Partial<SearchSnapshot> = {}): SearchSnapshot {
   return {
@@ -90,5 +94,30 @@ describe('isPermanentPollError', () => {
     expect(isPermanentPollError(error(502))).toBe(false)
     expect(isPermanentPollError(error(0))).toBe(false)
     expect(isPermanentPollError(null)).toBe(false)
+  })
+})
+
+describe('shouldRetryPoll', () => {
+  const error = (status: number) =>
+    new ApiError('x', { status, statusText: '', url: '/api/search/x' })
+
+  afterEach(() => vi.restoreAllMocks())
+
+  it('retries transient errors twice in a visible tab', () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+
+    expect(shouldRetryPoll(0, error(0))).toBe(true)
+    expect(shouldRetryPoll(1, error(502))).toBe(true)
+    expect(shouldRetryPoll(2, error(502))).toBe(false)
+    expect(shouldRetryPoll(0, error(404))).toBe(false)
+  })
+
+  it('never retries in a hidden tab, so the next interval tick polls again', () => {
+    // Повтор в скрытой вкладке встаёт на паузу и останавливает опрос —
+    // сервер тогда считает задачу брошенной, хотя страница открыта.
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+
+    expect(shouldRetryPoll(0, error(0))).toBe(false)
+    expect(shouldRetryPoll(0, error(502))).toBe(false)
   })
 })

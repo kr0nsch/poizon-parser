@@ -301,6 +301,15 @@ class TestSizeOutsideOfficialTable(unittest.TestCase):
         self.assertNotIn(" от ", message)
         self.assertEqual(self.finder.loaded, [])
 
+    def test_millimetres_compared_in_centimetres(self):
+        # 180 мм = 18 см — ниже таблицы Nike; сравнивать «180» с колонкой
+        # в сантиметрах дало бы бессмысленный «пропуск» внутри неё.
+        from poizon_parser.finder import out_of_table_message
+
+        message = out_of_table_message("Nike", "MM", 180)
+        self.assertIn("длина стопы от 21,6 до 37,2 см", message)
+        self.assertIsNone(out_of_table_message("Nike", "MM", 265))
+
     def test_size_inside_table_still_scanned(self):
         matches = self.finder.find_by_brand(
             "Nike", size="26,2", scale=CM, catalog=self.catalog

@@ -402,6 +402,46 @@ class TestAbandonedRunningJob(unittest.TestCase):
         self.assertFalse(manager._stop_requested(job))
         self.assertFalse(job["cancel"])
 
+    def test_wake_from_sleep_does_not_abandon_open_page(self):
+        # Компьютер спал дольше ABANDON_AFTER: и опросы, и проверки воркеров
+        # стояли. Первая проверка после пробуждения не должна отменять поиск,
+        # за которым открытая страница следит.
+        manager = JobManager()
+        asleep = time.time() - webapp.ABANDON_AFTER - 60
+        job = add_job(manager, _last_poll=asleep, _last_check=asleep)
+        self.assertFalse(manager._stop_requested(job))
+        self.assertFalse(job["cancel"])
+        # Сразу после пробуждения и чистка при новом поиске её не трогает.
+        job2 = add_job(manager, status="running", _last_poll=asleep, _last_check=asleep)
+        with manager._lock:
+            manager._abandon_unpolled()
+        self.assertFalse(job2["cancel"])
+
+    def test_sweep_skips_job_finished_meanwhile(self):
+        # Гонка: задача завершилась, пока чистка ждала её замок.
+        manager = JobManager()
+        stale = time.time() - webapp.ABANDON_AFTER - 1
+        job = add_job(manager, status="running", _last_poll=stale)
+        real_cond = job["_cond"]
+
+        class FinishOnEnter:
+            def __enter__(self):
+                real_cond.__enter__()
+                job["status"] = "done"
+                return self
+
+            def __exit__(self, *exc):
+                return real_cond.__exit__(*exc)
+
+            def notify_all(self):
+                real_cond.notify_all()
+
+        job["_cond"] = FinishOnEnter()
+        with manager._lock:
+            manager._abandon_unpolled()
+        self.assertFalse(job["cancel"])
+        self.assertEqual(job["log"], [])
+
     def test_scan_stops_and_job_ends_as_abandoned(self):
         manager = JobManager()
         params = {"brand": "nike", "size": "26.5", "scale": "CM"}

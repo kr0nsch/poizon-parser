@@ -330,6 +330,9 @@ class TestWriteReport(unittest.TestCase):
             # Голое «US» не перебивает выбранную женскую шкалу.
             ({"size_input": "US 7", "scale": "US W"}, "nike-us-w-7"),
             ({"size_input": "26,5 cm", "scale": "CM"}, "nike-26-5cm"),
+            # Трети Adidas не теряются: EU 42⅔ — не папка «EU 42».
+            ({"size_input": "42⅔", "scale": "EU"}, "nike-eu-42-2-3"),
+            ({"size_input": "42 2/3", "scale": "EU"}, "nike-eu-42-2-3"),
             ({"scale": "EU"}, "nike"),
         )
         for extra, expected in cases:

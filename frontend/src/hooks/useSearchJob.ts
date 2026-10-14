@@ -20,6 +20,27 @@ export function isPermanentPollError(error: ApiError | null): boolean {
   return error != null && error.status >= 400 && error.status < 500
 }
 
+/**
+ * Повторять ли неудачный опрос. В скрытой вкладке — нет: повтор TanStack
+ * там встаёт на паузу до возврата фокуса и держит запрос «в полёте», так что
+ * следующие тики интервала не уходят на сервер, а сервер через 30 минут без
+ * опросов считает задачу брошенной. Без повтора ошибка просто фиксируется,
+ * и следующий тик интервала делает новый запрос.
+ */
+export function shouldRetryPoll(
+  failureCount: number,
+  error: ApiError | null,
+): boolean {
+  if (isPermanentPollError(error)) return false
+  if (
+    typeof document !== 'undefined' &&
+    document.visibilityState === 'hidden'
+  ) {
+    return false
+  }
+  return failureCount < 2
+}
+
 function wait(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal.aborted) {
@@ -90,12 +111,6 @@ export function useSearchJob(jobId: string | null | undefined) {
     // проходить капчу, а сервер считает задачу без опросов брошенной.
     // Браузер сам замедляет таймеры скрытых вкладок, сервер — локальный.
     refetchIntervalInBackground: true,
-    retry: (failureCount, error) => {
-      if (isPermanentPollError(error)) {
-        return false
-      }
-
-      return failureCount < 2
-    },
+    retry: shouldRetryPoll,
   })
 }

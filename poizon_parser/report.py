@@ -418,6 +418,10 @@ def write_report(
 _KNOWN_SCALES = (EU, RU, UK, US_MEN, US_WOMEN, CM, MM)
 #: Шкала в начале строки размера: буквы до первой цифры.
 _SIZE_PREFIX_RE = re.compile(r"^\s*([^\W\d_][^\d]*?)\s*(?=\d)")
+#: Юникод-дроби размеров → текст для имени папки.
+_FRACTION_WORDS = str.maketrans(
+    {"⅓": " 1/3", "⅔": " 2/3", "½": " 1/2", "¼": " 1/4", "¾": " 3/4"}
+)
 
 
 def _slug_part(text: str, limit: int) -> str:
@@ -443,7 +447,8 @@ def _size_slug(meta: dict) -> str:
         raw = raw[match.end():]
     scale = resolve_query_scale(written, meta.get("scale"), default=CM)
     unit = {CM: "cm", MM: "mm"}.get(scale)
-    number = _slug_part(raw, 16)
+    # «42⅔» → «42-2-3», как и «42 2/3»: иначе дробь пропала бы из имени.
+    number = _slug_part(raw.translate(_FRACTION_WORDS), 16)
     if unit:
         # «26,5 cm» → «26-5cm», а не «26-5-cmcm».
         number = re.sub(rf"-?{unit}$", "", number)

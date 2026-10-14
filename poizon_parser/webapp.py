@@ -89,9 +89,12 @@ JOB_RETENTION = 20
 #: задачи свой темп запросов, так что без потолка нагрузка на сайт росла бы
 #: с числом задач.
 MAX_ACTIVE_JOBS = 4
-#: Через сколько секунд без опросов задача на паузе считается брошенной
-#: (вкладку закрыли, пока висела проверка) и останавливается сама.
+#: Через сколько секунд без опросов задача (идущая или на паузе) считается
+#: брошенной — страницу закрыли или перезагрузили — и останавливается сама.
 ABANDON_AFTER = 30 * 60
+#: Разрыв между проверками задачи самим сервером, после которого считаем, что
+#: компьютер спал (или перевели часы), и даём странице время снова опросить.
+SUSPEND_GAP = 120
 #: Разумные границы длины стопы, см — вне них ввод считается ошибкой.
 FOOT_MIN_CM = 15.0
 FOOT_MAX_CM = 40.0
@@ -459,6 +462,9 @@ class JobManager:
         # Когда задачу последний раз опрашивали: без опросов дольше
         # ABANDON_AFTER задача брошена (_wait_for_captcha, _abandon_unpolled).
         job["_last_poll"] = time.time()
+        # Когда воркеры последний раз проверяли задачу (_heartbeat): большой
+        # разрыв означает сон компьютера, а не закрытую страницу.
+        job["_last_check"] = time.time()
         job["_abandoned"] = False
         return job
 
@@ -500,9 +506,20 @@ class JobManager:
         for job in self._jobs.values():
             if job["status"] not in ("running", "captcha") or job.get("_abandoned"):
                 continue
+            if now - job.get("_last_check", now) > SUSPEND_GAP:
+                # Воркеры задачи давно не проверялись — сервер только что
+                # проснулся; странице нужна пара секунд, чтобы опросить.
+                continue
             if now - job.get("_last_poll", now) > ABANDON_AFTER:
                 with job["_cond"]:
-                    self._abandon(job)
+                    # Пока ждали замок, задача могла завершиться или её
+                    # уже бросил воркер.
+                    if (
+                        job["status"] in ("running", "captcha")
+                        and not job["cancel"]
+                        and not job.get("_abandoned")
+                    ):
+                        self._abandon(job)
 
     def count(self) -> dict:
         """Сводка по задачам — для health-эндпоинта."""
@@ -676,6 +693,7 @@ class JobManager:
             seen = job["_resume_gen"]
             since = time.time()
             while job["_resume_gen"] == seen and not job["cancel"]:
+                self._heartbeat(job, time.time())
                 # Отсчёт — от последнего опроса, но не раньше начала паузы.
                 deadline = max(job.get("_last_poll", since), since) + ABANDON_AFTER
                 left = deadline - time.time()
@@ -696,12 +714,28 @@ class JobManager:
         """
         if job["cancel"]:
             return True
-        if time.time() - job.get("_last_poll", time.time()) <= ABANDON_AFTER:
+        now = time.time()
+        self._heartbeat(job, now)
+        if now - job.get("_last_poll", now) <= ABANDON_AFTER:
             return False
         with job["_cond"]:
             if not job["cancel"]:
                 self._abandon(job)
         return True
+
+    @staticmethod
+    def _heartbeat(job: dict, now: float) -> None:
+        """Отмечает проверку задачи сервером; после «сна» даёт странице фору.
+
+        Воркеры проверяют задачу каждые доли секунды. Если с прошлой
+        проверки прошло больше SUSPEND_GAP, компьютер спал или часы перевели:
+        опросов не было не потому, что страницу закрыли, — отсчёт брошенности
+        начинается заново.
+        """
+        last = job.get("_last_check")
+        job["_last_check"] = now
+        if last is not None and now - last > SUSPEND_GAP:
+            job["_last_poll"] = now
 
     def _abandon(self, job: dict) -> None:
         """Останавливает брошенную на паузе задачу. Вызывать под job["_cond"]."""
