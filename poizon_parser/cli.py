@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from . import __version__
-from .client import PoizonClient, PoizonError
+from .client import ChallengeRequired, PoizonClient, PoizonError
 from .finder import SizeFinder
 from .models import Match, Product
 from .sizechart import (
@@ -32,6 +32,7 @@ from .sizechart import (
     normalize_scale,
     official_charts,
     resolve_brand,
+    resolve_query_scale,
 )
 from .sizes import parse_size_query
 
@@ -68,8 +69,13 @@ def _num(value: float) -> str:
     """Число для человека: 26.5 → «26,5», 43.3333 → «43⅓», 36.6667 → «36⅔».
 
     Adidas ведёт EU-сетку с шагом в треть размера, и «43,3333» в выводе
-    читается хуже, чем «43⅓» с ярлыка самого бренда.
+    читается хуже, чем «43⅓» с ярлыка самого бренда. Бесконечность и NaN
+    не роняют вывод: math.floor(inf) — OverflowError.
     """
+    if math.isnan(value):
+        return "—"
+    if math.isinf(value):
+        return "∞" if value > 0 else "-∞"
     whole = math.floor(value)
     fraction = value - whole
     if abs(fraction - 1 / 3) < 0.01:
@@ -362,19 +368,35 @@ def _build_finder(args) -> SizeFinder:
 def _foot_size(size: str, scale: str) -> tuple[float, str]:
     """Размер и шкала для shoes/allbrands → (число, каноническая шкала).
 
-    Шкалу можно задать и в самом размере («EU 43») — она важнее --scale, так
-    же решает finder. Неизвестная шкала не должна молча стать EU, а «42» без
-    --scale EU — длиной стопы 42 см: оба случая — ValueError с подсказкой.
+    Шкалу можно задать и в самом размере («EU 43», «US W 7») — она важнее
+    --scale. Исключение — голое «US»: пол оно не задаёт и не перебивает
+    --scale "US M" / "US W". Правило общее с finder и веб-сервером
+    (sizechart.resolve_query_scale). Неизвестная шкала не должна молча стать
+    EU, а «42» без --scale EU — длиной стопы 42 см: оба случая — ValueError
+    с подсказкой; отрицательный и бесконечный размер — тоже.
     """
     parsed_scale, value = parse_size_query(size)
-    raw_scale = parsed_scale or scale
-    canonical = normalize_scale(raw_scale)
+    canonical = resolve_query_scale(parsed_scale, scale, default=CM)
     if canonical not in INPUT_SCALES:
-        raise ValueError(f"неизвестная шкала «{raw_scale}». Доступны: {_SCALES_HELP}")
+        # Явную --scale проверил argparse — неизвестной бывает шкала из -s.
+        raise ValueError(
+            f"неизвестная шкала «{parsed_scale or scale}». Доступны: {_SCALES_HELP}"
+        )
     if value <= 0:
         raise ValueError("размер должен быть больше нуля")
     if canonical == MM:
-        value, canonical = value / 10, CM
+        millimetres, value, canonical = value, value / 10, CM
+        if not FOOT_MIN_CM <= value <= FOOT_MAX_CM:
+            # Человек сам сказал «миллиметры» — подсказки про --scale MM и EU
+            # тут лишние, а границы понятнее в тех же миллиметрах.
+            hint = (
+                " Если это сантиметры — уберите MM."
+                if FOOT_MIN_CM <= millimetres <= FOOT_MAX_CM else ""
+            )
+            raise ValueError(
+                f"длина стопы {_num(millimetres)} мм вне разумных границ "
+                f"({_num(FOOT_MIN_CM * 10)}–{_num(FOOT_MAX_CM * 10)} мм).{hint}"
+            )
     if canonical == CM and not FOOT_MIN_CM <= value <= FOOT_MAX_CM:
         if value > FOOT_MAX_CM * 2.5:
             hint = "Если это миллиметры — добавьте --scale MM."
@@ -417,18 +439,39 @@ def _file_problem(path: str) -> Optional[str]:
 
 
 def _dir_problem(path: str) -> Optional[str]:
-    """Можно ли создать в -o папку HTML-отчёта. Текст ошибки или None."""
+    """Можно ли создать в -o папку HTML-отчёта. Текст ошибки или None.
+
+    Проверяем делом, как и _file_problem: создаём недостающие папки и
+    пробный файл, затем убираем всё, что создала сама проверка. Одного
+    взгляда на существующего предка мало — недопустимое имя («rep<ort» на
+    Windows) или папка без прав всплыли бы только после долгого обхода.
+    """
     target = Path(path)
-    if target.exists():
-        return None if target.is_dir() else (
-            f"«{path}» — это файл; для -f html укажите в -o папку для отчёта"
-        )
-    # Папку создаст write_report — проверяем ближайшего существующего предка.
-    ancestor = target.parent
+    if target.exists() and not target.is_dir():
+        return f"«{path}» — это файл; для -f html укажите в -o папку для отчёта"
+    missing: list[Path] = []
+    ancestor = target
     while not ancestor.exists() and ancestor != ancestor.parent:
+        missing.append(ancestor)
         ancestor = ancestor.parent
     if not ancestor.is_dir():
         return f"нельзя создать папку «{path}»: «{ancestor}» нет или это не папка"
+    created: list[Path] = []
+    try:
+        # Папки — по одной, от внешней к внутренней: так известно, что убрать.
+        for folder in reversed(missing):
+            folder.mkdir()
+            created.append(folder)
+        with tempfile.TemporaryFile(dir=str(target)):
+            pass
+    except OSError as exc:
+        return f"нельзя записать отчёт в «{path}»: {exc.strerror or exc}"
+    finally:
+        for folder in reversed(created):
+            try:
+                folder.rmdir()
+            except OSError:
+                pass
     return None
 
 
@@ -500,33 +543,68 @@ def _html_report(
 
 # --------------------------------------------------------------- команды
 
+def _partial(exc: ChallengeRequired) -> list[Match]:
+    """Находки, с которыми SizeFinder выпустил проверку сайта наружу."""
+    return list(getattr(exc, "partial", None) or [])
+
+
+def _interrupted(exc: ChallengeRequired, count: int) -> int:
+    """Итог поиска, который оборвала проверка сайта (например, «q» на капче).
+
+    Найденное до обрыва уже выведено или сохранено — здесь только пометка,
+    что выдача неполная. Код возврата тот же, что у любой ошибки сайта.
+    """
+    print(
+        f"Ошибка: {exc}.\n"
+        "Поиск прерван проверкой сайта: в выдаче только то, что нашлось до "
+        f"остановки ({_models(count)}). Пройдите проверку в браузере и "
+        "запустите поиск снова — проверенные карточки уже в кэше.",
+        file=sys.stderr,
+    )
+    return 2
+
+
 def cmd_find(args) -> int:
     try:
         parsed_scale, _ = parse_size_query(args.size)
     except ValueError as exc:
         return _fail(str(exc))
-    if not args.scale and parsed_scale and parsed_scale not in NATIVE_SCALES:
+    # Шкалу из -s проверяем и при --scale: иначе «US 9» --scale EU молча
+    # теряло бы «US» и искало EU 9.
+    if parsed_scale and parsed_scale not in NATIVE_SCALES:
         return _fail(
             f"на POIZON размеры подписаны только в RU и EU, а не в {parsed_scale}. "
-            'Для US/UK ищите через shoes: --scale "US M" или --scale UK'
+            'Для US/UK/CM ищите через shoes: --scale "US M", UK или CM'
+        )
+    if parsed_scale and args.scale and parsed_scale != args.scale:
+        return _fail(
+            f"шкала в размере ({parsed_scale}) не совпадает с --scale {args.scale}. "
+            "Оставьте одну из них"
         )
     problem = _output_problem(args)
     if problem:
         return _fail(problem)
 
     finder = _build_finder(args)
-    matches = finder.find(
-        query=args.query,
-        size=args.size,
-        scale=args.scale,
-        limit=args.limit,
-        search_limit=args.check,
-        tolerance=args.tolerance,
-        max_price=args.max_price,
-        min_price=args.min_price,
-        only_in_stock=not args.include_unavailable,
-        allow_scale_fallback=not args.strict_scale,
-    )
+    interrupted: Optional[ChallengeRequired] = None
+    try:
+        matches = finder.find(
+            query=args.query,
+            size=args.size,
+            scale=args.scale,
+            limit=args.limit,
+            search_limit=args.check,
+            tolerance=args.tolerance,
+            max_price=args.max_price,
+            min_price=args.min_price,
+            only_in_stock=not args.include_unavailable,
+            allow_scale_fallback=not args.strict_scale,
+        )
+    except ChallengeRequired as exc:
+        matches = _partial(exc)
+        if not matches:
+            raise  # показать нечего — обычная ошибка сайта, её подпишет main()
+        interrupted = exc
 
     if args.format == "json":
         output = render_json(matches)
@@ -536,6 +614,8 @@ def cmd_find(args) -> int:
         output = render_table(matches)
 
     code = _write_output(args, output, len(matches))
+    if interrupted is not None:
+        return _interrupted(interrupted, len(matches))
     return code or (0 if matches else 1)
 
 
@@ -709,6 +789,7 @@ def cmd_shoes(args) -> int:
         return _fail(problem)
 
     finder = _build_finder(args)
+    interrupted: Optional[ChallengeRequired] = None
     try:
         matches = finder.find_by_brand(
             brand=args.brand,
@@ -723,23 +804,31 @@ def cmd_shoes(args) -> int:
             workers=args.workers,
             gender=args.gender,
         )
+    except ChallengeRequired as exc:
+        # Проверку не прошли (или ответили «q») — найденное до неё не теряем.
+        matches = _partial(exc)
+        if not matches:
+            raise  # показать нечего — обычная ошибка сайта, её подпишет main()
+        interrupted = exc
     except (json.JSONDecodeError, UnicodeDecodeError):
         raise  # виноват ответ сайта, а не ввод — подпишет main()
     except ValueError as exc:
         return _fail(str(exc))
 
     if args.format == "html":
-        return _html_report(args, matches, args.brand, size, scale)
-
-    if args.format == "json":
-        output = render_json(matches)
-    elif args.format == "csv":
-        output = render_csv(matches)
+        code = _html_report(args, matches, args.brand, size, scale)
     else:
-        output = render_shoes_table(matches)
+        if args.format == "json":
+            output = render_json(matches)
+        elif args.format == "csv":
+            output = render_csv(matches)
+        else:
+            output = render_shoes_table(matches)
+        code = _write_output(args, output, len(matches)) or (0 if matches else 1)
 
-    code = _write_output(args, output, len(matches))
-    return code or (0 if matches else 1)
+    if interrupted is not None:
+        return _interrupted(interrupted, len(matches))
+    return code
 
 
 def cmd_allbrands(args) -> int:
@@ -784,6 +873,7 @@ def cmd_allbrands(args) -> int:
 
     finder = _build_finder(args)
     per_brand: list[tuple[str, list[Match]]] = []
+    interrupted: Optional[ChallengeRequired] = None
     try:
         matches = finder.find_in_official_brands(
             size=size,
@@ -800,6 +890,12 @@ def cmd_allbrands(args) -> int:
             only=selected,
             on_brand=lambda name, found: per_brand.append((name, found)),
         )
+    except ChallengeRequired as exc:
+        # Обход оборван проверкой — показываем бренды, пройденные до неё.
+        matches = _partial(exc)
+        if not matches:
+            raise  # показать нечего — обычная ошибка сайта, её подпишет main()
+        interrupted = exc
     except (json.JSONDecodeError, UnicodeDecodeError):
         raise  # виноват ответ сайта, а не ввод — подпишет main()
     except ValueError as exc:
@@ -807,29 +903,33 @@ def cmd_allbrands(args) -> int:
 
     if args.format == "html":
         brands = ", ".join(name for name, _ in per_brand)
-        return _html_report(args, matches, brands, size, scale)
-
-    if args.format == "json":
-        output = render_json(matches)
-    elif args.format == "csv":
-        output = render_csv(matches)
+        code = _html_report(args, matches, brands, size, scale)
     else:
-        lines = ["По брендам:"]
-        for name, found in per_brand:
-            eus = sorted({m.converted_eu for m in found if m.converted_eu is not None})
-            size_label = " · ".join(f"EU {_num(v)}" for v in eus) if eus else "—"
-            lines.append(f"  {name:<14} {_models(len(found)):<12} {size_label}")
-        if skipped:
-            lines.append(
-                f"Без официальной шкалы {scale} и потому пропущены: "
-                + ", ".join(skipped)
+        if args.format == "json":
+            output = render_json(matches)
+        elif args.format == "csv":
+            output = render_csv(matches)
+        else:
+            lines = ["По брендам:"]
+            for name, found in per_brand:
+                eus = sorted({m.converted_eu for m in found if m.converted_eu is not None})
+                size_label = " · ".join(f"EU {_num(v)}" for v in eus) if eus else "—"
+                lines.append(f"  {name:<14} {_models(len(found)):<12} {size_label}")
+            if interrupted is not None:
+                lines.append("Список неполный: поиск прерван проверкой сайта.")
+            if skipped:
+                lines.append(
+                    f"Без официальной шкалы {scale} и потому пропущены: "
+                    + ", ".join(skipped)
+                )
+            output = _join_lines(
+                [*lines, "", render_shoes_table(matches, show_brand=True)]
             )
-        output = _join_lines(
-            [*lines, "", render_shoes_table(matches, show_brand=True)]
-        )
+        code = _write_output(args, output, len(matches)) or (0 if matches else 1)
 
-    code = _write_output(args, output, len(matches))
-    return code or (0 if matches else 1)
+    if interrupted is not None:
+        return _interrupted(interrupted, len(matches))
+    return code
 
 
 def cmd_chart(args) -> int:

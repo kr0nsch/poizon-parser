@@ -16,18 +16,24 @@ from .models import Match, Product, SearchItem
 from .sizechart import (
     CM,
     EU,
-    US_MEN,
-    US_WOMEN,
     SizeChart,
     convert_to_eu,
-    normalize_scale,
     official_charts,
     resolve_brand,
+    resolve_query_scale,
 )
 from .sizes import SIZE_EPSILON, match_size, parse_size_query, scale_priority
 
 if TYPE_CHECKING:
     from .catalog import Catalog
+
+
+def _by_price(matches: Iterable[Match]) -> list[Match]:
+    """Порядок выдачи: дешевле — выше, без цены — в конце."""
+    return sorted(
+        matches,
+        key=lambda m: m.offer.price if m.offer.price is not None else float("inf"),
+    )
 
 
 class SizeFinder:
@@ -213,9 +219,13 @@ class SizeFinder:
                 break
             try:
                 product = self.load_product(item)
-            except (ChallengeRequired, Cancelled):
-                # Проверка сайта и отмена — не беда одной карточки: дальше
-                # сайт блокирует всё подряд, а пользователь уже ответил «стоп».
+            except ChallengeRequired as exc:
+                # Проверка сайта — не беда одной карточки: дальше сайт
+                # блокирует всё подряд. Найденное до неё не теряем.
+                exc.partial = _by_price(matches) if sort_by_price else list(matches)
+                raise
+            except Cancelled:
+                # Пользователь уже ответил «стоп».
                 raise
             except PoizonError as exc:
                 self.on_progress(f"[{index}/{len(items)}] пропуск {item.spu_id}: {exc}")
@@ -248,11 +258,7 @@ class SizeFinder:
             )
             matches.append(match)
 
-        if sort_by_price:
-            matches.sort(
-                key=lambda m: m.offer.price if m.offer.price is not None else float("inf")
-            )
-        return matches
+        return _by_price(matches) if sort_by_price else matches
 
     def match_by_scale(
         self,
@@ -319,6 +325,10 @@ class SizeFinder:
         Основной сценарий: выбрал бренд → указал свой размер → получил список
         с ценами. Категория ограничена обувью, размеры без предложений
         отбрасываются.
+
+        Шкала из строки размера («US W 7») и явная scale сводятся по общему
+        правилу resolve_query_scale. Если обход оборвала проверка сайта,
+        ChallengeRequired уходит наружу с находками в ``exc.partial``.
         """
         from .catalog import Catalog  # локальный импорт: избегаем цикла
 
@@ -331,18 +341,12 @@ class SizeFinder:
                 + (f". Похожие: {hints}" if hints else "")
             )
 
+        parsed_scale = None
         if isinstance(size, str):
             parsed_scale, size_value = parse_size_query(size)
-            # Голое «US» в размере пол не задаёт и не должно перебивать явно
-            # выбранную шкалу «US W»: «-s "US 7" --scale "US W"» — женский 7.
-            if parsed_scale == "US" and normalize_scale(scale) in (
-                US_MEN, US_WOMEN,
-            ):
-                parsed_scale = None
-            scale = parsed_scale or scale
         else:
             size_value = float(size)
-        scale = normalize_scale(scale) or EU
+        scale = resolve_query_scale(parsed_scale, scale, default=EU)
 
         depth = "весь каталог" if not check else f"до {check} моделей"
         self.on_progress(
@@ -373,22 +377,23 @@ class SizeFinder:
                     f"пропущено по цене без загрузки карточек: {skipped}"
                 )
 
-        matches = self.scan_products(
-            items,
-            size_value,
-            scale,
-            brand_name=found.name,
-            tolerance=tolerance,
-            max_price=max_price,
-            min_price=min_price,
-            limit=limit,
-            workers=workers,
-            gender=gender,
-        )
-        matches.sort(
-            key=lambda m: m.offer.price if m.offer.price is not None else float("inf")
-        )
-        return matches
+        try:
+            matches = self.scan_products(
+                items,
+                size_value,
+                scale,
+                brand_name=found.name,
+                tolerance=tolerance,
+                max_price=max_price,
+                min_price=min_price,
+                limit=limit,
+                workers=workers,
+                gender=gender,
+            )
+        except ChallengeRequired as exc:
+            exc.partial = _by_price(getattr(exc, "partial", None) or [])
+            raise
+        return _by_price(matches)
 
     def find_in_official_brands(
         self,
@@ -422,15 +427,24 @@ class SizeFinder:
             total_limit: общий потолок выдачи после сортировки по цене.
             only: ограничить список брендов — имена, ключи таблиц или их
                 алиасы («nb», «jordan», «adidas originals»).
-            on_brand: вызывается после каждого бренда — (имя, его находки).
+            on_brand: вызывается после каждого бренда — (имя, его находки);
+                при обрыве проверкой — и для прерванного бренда с тем, что
+                у него успели найти.
 
         Бренды, которых нет в каталоге сайта, пропускаются с сообщением
-        в прогресс, а не роняют весь обход.
+        в прогресс, а не роняют весь обход. Проверка сайта обрывает обход:
+        ChallengeRequired уходит наружу, а в ``exc.partial`` — находки всех
+        брендов до неё, отсортированные и обрезанные так же, как выдача.
         """
         from .catalog import Catalog  # локальный импорт: избегаем цикла
 
         catalog = catalog or Catalog(self.client)
-        scale = normalize_scale(scale) or CM
+        # Шкалу из строки размера учитываем уже при выборе брендов: «US M 9»
+        # при scale=CM — поиск по US M, и Puma в нём участвует.
+        parsed_scale = None
+        if isinstance(size, str):
+            parsed_scale, size = parse_size_query(size)
+        scale = resolve_query_scale(parsed_scale, scale, default=CM)
 
         charts = official_charts(scale, gender)
         if only:
@@ -456,6 +470,18 @@ class SizeFinder:
         )
 
         matches: list[Match] = []
+
+        def collect(name: str, found: list[Match]) -> None:
+            for match in found:
+                match.product.brand = match.product.brand or name
+            matches.extend(found)
+            if on_brand:
+                on_brand(name, found)
+
+        def result() -> list[Match]:
+            ordered = _by_price(matches)
+            return ordered[:total_limit] if total_limit else ordered
+
         for index, chart in enumerate(charts, 1):
             self.on_progress(f"[{index}/{len(charts)}] {chart.name}")
             try:
@@ -473,21 +499,18 @@ class SizeFinder:
                     workers=workers,
                     gender=gender,
                 )
+            except ChallengeRequired as exc:
+                collect(chart.name, list(getattr(exc, "partial", None) or []))
+                exc.partial = result()
+                raise
             except ValueError as exc:
                 # Бренда нет в каталоге сайта — остальные всё равно обходим.
                 self.on_progress(f"{chart.name}: {exc}")
                 found = []
 
-            for match in found:
-                match.product.brand = match.product.brand or chart.name
-            matches.extend(found)
-            if on_brand:
-                on_brand(chart.name, found)
+            collect(chart.name, found)
 
-        matches.sort(
-            key=lambda m: m.offer.price if m.offer.price is not None else float("inf")
-        )
-        return matches[:total_limit] if total_limit else matches
+        return result()
 
     def scan_products(
         self,
@@ -509,6 +532,9 @@ class SizeFinder:
         workers > 1 грузит карточки параллельно. Частоту это не повышает:
         общий ограничитель клиента держит заданный темп, а потоки лишь
         перекрывают сетевые задержки.
+
+        Проверка сайта (ChallengeRequired) обрывает обход; уже принятые
+        находки уходят вместе с ней в ``exc.partial`` (в порядке находок).
         """
         total = len(items)
         matches: list[Match] = []
@@ -633,6 +659,12 @@ class SizeFinder:
                             for pending in futures:
                                 pending.cancel()
             return matches
+        except ChallengeRequired as exc:
+            # Обход оборвала проверка сайта — найденное до неё отдаём вместе
+            # с исключением: CLI покажет его, а не выбросит.
+            with lock:
+                exc.partial = list(matches)
+            raise
         finally:
             if client is not None:
                 client.should_stop = previous_stop

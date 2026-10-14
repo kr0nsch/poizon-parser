@@ -144,6 +144,34 @@ def normalize_scale(name: Optional[str]) -> Optional[str]:
     return _ALIASES.get(key2, key or None)
 
 
+def resolve_query_scale(
+    parsed_scale: Optional[str],
+    explicit_scale: Optional[str],
+    default: Optional[str] = None,
+) -> Optional[str]:
+    """Шкала поиска: написанная в размере («US W 7») или выбранная явно.
+
+    Одно правило для CLI, веб-сервера и SizeFinder — раньше каждый решал
+    по-своему, и «-s "US 7" --scale "US W"» в одном месте искал женский US 7,
+    а в другом мужской:
+
+    - шкала из строки размера главнее явной: «EU 43», «US W 7», «MM 265»
+      при --scale CM — это EU, US W и MM;
+    - кроме голого «US»: пол оно не задаёт и потому не перебивает явно
+      выбранную «US M» / «US W». Без такой явной шкалы голое «US» — мужская,
+      как и везде в кроссовочном контексте;
+    - в размере шкалы нет — явная, а без неё — default.
+
+    Возвращает каноническое имя шкалы (см. normalize_scale) или default.
+    """
+    explicit = normalize_scale(explicit_scale)
+    if parsed_scale:
+        bare_us = str(parsed_scale).strip().upper() == "US"
+        if not (bare_us and explicit in (US_MEN, US_WOMEN)):
+            return normalize_scale(parsed_scale)
+    return explicit or default
+
+
 @dataclass
 class Conversion:
     """Результат перевода размера в шкалу EU."""

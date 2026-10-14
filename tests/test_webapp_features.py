@@ -8,6 +8,7 @@ from contextlib import redirect_stdout
 from unittest.mock import MagicMock, patch
 
 from poizon_parser import webapp
+from poizon_parser.catalog import Brand
 from poizon_parser.webapp import (
     JobManager,
     ReportRequestError,
@@ -70,6 +71,80 @@ class TestValidateSearch(unittest.TestCase):
                 self.assertIn("число", msg)
         msg = validate_search({"brand": "nike", "size": "26", "maxPrice": "nan"})
         self.assertIn("числом", msg)
+
+
+class TestSearchScale(unittest.TestCase):
+    """Шкала веб-поиска — по тому же правилу, что у CLI и SizeFinder."""
+
+    def scan_args(self, size, scale=None):
+        """(размер, шкала), с которыми задача запускает обход карточек."""
+        params = {"brand": "nike", "size": size}
+        if scale is not None:
+            params["scale"] = scale
+        manager = JobManager()
+        job = JobManager._new_job(params)
+        with patch.object(webapp, "PoizonClient") as client_class, \
+                patch.object(webapp, "Catalog") as catalog_class, \
+                patch.object(webapp, "SizeFinder") as finder_class:
+            client_class.return_value.stats = {}
+            catalog = catalog_class.return_value
+            catalog.find_brand.return_value = Brand(
+                brand_id=1, name="Nike", url="/brand/nike"
+            )
+            catalog.brand_items.return_value = []
+            manager._search(job, params)
+        args = finder_class.return_value.scan_products.call_args[0]
+        return args[1], args[2]
+
+    def test_bare_us_does_not_override_selected_women_scale(self):
+        # Регрессия: голое «US» в размере перебивало «US W» из формы.
+        self.assertEqual(self.scan_args("US 7", "US W"), (7.0, "US W"))
+
+    def test_gendered_scale_in_size_wins(self):
+        self.assertEqual(self.scan_args("US W 7", "US M"), (7.0, "US W"))
+
+    def test_bare_us_with_other_scale_is_men(self):
+        self.assertEqual(self.scan_args("US 9", "EU"), (9.0, "US M"))
+
+    def test_selected_scale_and_default(self):
+        self.assertEqual(self.scan_args("26.5", "CM"), (26.5, "CM"))
+        self.assertEqual(self.scan_args("42"), (42.0, "EU"))
+
+
+class TestLiveStats(unittest.TestCase):
+    """Строка статистики под прогрессом обновляется во время поиска."""
+
+    def test_snapshot_reads_client_counters_while_running(self):
+        manager = JobManager()
+        job = add_job(manager, status="running")
+        counters = {"requests": 0, "cache_hits": 0, "cooldowns": 0, "challenges": 0}
+        job["_client_stats"] = counters
+
+        counters["requests"] = 3
+        counters["cache_hits"] = 2
+        stats = manager.snapshot(job["id"])["stats"]
+        self.assertEqual(stats["requests"], 3)
+        self.assertEqual(stats["cache_hits"], 2)
+        # Снимок — копия: дальнейший счёт клиента его не меняет.
+        counters["requests"] = 4
+        self.assertEqual(stats["requests"], 3)
+
+    def test_search_exposes_client_counters(self):
+        manager = JobManager()
+        params = {"brand": "nike", "size": "26.5", "scale": "CM"}
+        job = JobManager._new_job(params)
+        with patch.object(webapp, "PoizonClient") as client_class, \
+                patch.object(webapp, "Catalog") as catalog_class, \
+                patch.object(webapp, "SizeFinder"):
+            client_class.return_value.stats = {"requests": 7}
+            catalog = catalog_class.return_value
+            catalog.find_brand.return_value = Brand(
+                brand_id=1, name="Nike", url="/brand/nike"
+            )
+            catalog.brand_items.return_value = []
+            manager._search(job, params)
+        manager._jobs[job["id"]] = job
+        self.assertEqual(manager.snapshot(job["id"])["stats"], {"requests": 7})
 
 
 class TestJobRetention(unittest.TestCase):

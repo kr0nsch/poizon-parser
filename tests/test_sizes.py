@@ -73,6 +73,39 @@ class TestParseSizeQuery(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(parse_size_query(text), ("US M", 9.0))
 
+    def test_single_cyrillic_gender_letter(self):
+        # Регрессия: «US Ж 7» читалось как голое «US» — мужской US 7.
+        for text in ("US Ж 7", "us ж 7", "USЖ7", "US жен 7"):
+            with self.subTest(text=text):
+                self.assertEqual(parse_size_query(text), ("US W", 7.0))
+        for text in ("US М 7", "us м 7", "USМ7", "US муж 7"):  # кириллица
+            with self.subTest(text=text):
+                self.assertEqual(parse_size_query(text), ("US M", 7.0))
+
+    def test_negative_size_rejected(self):
+        # Регрессия: знак терялся, и «-42» искало размер 42.
+        for text in (
+            "-42", "−42", "–42", "EU:-42", "US W −7",
+            # Минус, приклеенный к слову пола или к числу после пробела.
+            "US W−7", "USW−7", "US Ж−7", "US M−9", "US W:-7", "EU -42", "CM -26,5",
+        ):
+            with self.subTest(text=text):
+                with self.assertRaises(ValueError) as ctx:
+                    parse_size_query(text)
+                self.assertIn("больше нуля", str(ctx.exception))
+
+    def test_dash_after_scale_is_still_a_separator(self):
+        self.assertEqual(parse_size_query("EU-42"), ("EU", 42.0))
+        self.assertEqual(parse_size_query("EU - 42"), ("EU", 42.0))
+        self.assertEqual(parse_size_query("US W-7"), ("US W", 7.0))
+        self.assertEqual(parse_size_query("US Women: 7"), ("US W", 7.0))
+
+    def test_number_too_big_for_float_rejected(self):
+        # Сотни цифр подряд float() превращает в inf.
+        with self.assertRaises(ValueError) as ctx:
+            parse_size_query("9" * 400)
+        self.assertIn("слишком большое", str(ctx.exception))
+
     def test_metric_prefixes(self):
         self.assertEqual(parse_size_query("CM 26,5"), ("CM", 26.5))
         self.assertEqual(parse_size_query("см 26,5"), ("CM", 26.5))

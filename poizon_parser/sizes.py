@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Iterable, Optional
 
@@ -32,14 +33,20 @@ _NUM_RE = re.compile(
 )
 # «US W» / «US M» и метрические шкалы проверяются раньше голого «US»: иначе
 # «US W 7» разбиралось бы как «US» + «W 7» и превращалось в мужской US 7.
+# Пол — латиницей или кириллицей, словом или одной буквой: «US Ж 7», «US М 7»
+# («жен», «муж» и «Женские» тоже начинаются с этих букв). Хвост слова не
+# забирает двоеточие и минусы, иначе знак числа «US W−7» терялся бы.
+# Группы: префикс, пробел до разделителя, разделитель, пробел после, число.
 _SCALE_PREFIX_RE = re.compile(
-    r"^\s*(US[\s_-]*(?:W|M|ЖЕН|МУЖ)[^\d\s]*|CM|MM|СМ|ММ|"
+    r"^\s*(US[\s_-]*(?:W|M|Ж|М)[^\d\s:\-−–]*|CM|MM|СМ|ММ|"
     + "|".join(KNOWN_SCALES)
-    + r")\s*[-:]?\s*(.+)$",
+    + r")(\s*)([-:]?)(\s*)(.+)$",
     re.IGNORECASE,
 )
 #: Кириллические «см»/«мм» → латинские коды, которые понимает sizechart.
 _METRIC_PREFIXES = {"СМ": "CM", "ММ": "MM"}
+#: Знаки минуса перед числом: дефис, типографский минус и короткое тире.
+_MINUS_SIGNS = ("-", "−", "–")
 
 
 def _canonical_scale(prefix: str) -> str:
@@ -81,6 +88,10 @@ def parse_size_query(text: str) -> tuple[Optional[str], float]:
     «CM 26,5», «MM 265». Возвращает (шкала или None, число); шкалы с полом и
     метрические приходят в виде, понятном ``sizechart.normalize_scale``:
     «US W», «US M», «CM», «MM». Голое «US» остаётся «US» — пол в нём не задан.
+
+    Отрицательный размер («-42») и число, которое не помещается во float
+    (сотни цифр подряд дают inf), — ValueError: иначе знак молча терялся бы,
+    а inf ронял бы вывод.
     """
     raw = str(text).strip()
     if not raw:
@@ -90,11 +101,19 @@ def parse_size_query(text: str) -> tuple[Optional[str], float]:
     match = _SCALE_PREFIX_RE.match(raw)
     if match:
         scale = _canonical_scale(match.group(1))
-        raw = match.group(2)
+        space_before, separator, space_after, raw = match.group(2, 3, 4, 5)
+        # «EU-42» и «EU - 42» — разделитель, а «EU -42» — минус у числа.
+        if separator == "-" and space_before and not space_after:
+            raise ValueError("размер должен быть больше нуля")
 
+    # parse_size ищет число внутри строки и знак перед ним не видит.
+    if raw.startswith(_MINUS_SIGNS):
+        raise ValueError("размер должен быть больше нуля")
     value = parse_size(raw)
     if value is None:
         raise ValueError(f"не удалось разобрать размер: {text!r}")
+    if not math.isfinite(value):
+        raise ValueError("не удалось разобрать размер: слишком большое число")
     return scale, value
 
 

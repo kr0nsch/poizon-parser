@@ -8,14 +8,16 @@ from poizon_parser.extract import parse_product
 from poizon_parser.sizechart import (
     CM,
     EU,
+    MM,
     RU,
     US_MEN,
     US_WOMEN,
     SizeChart,
     convert_to_eu,
     normalize_scale,
+    resolve_query_scale,
 )
-from poizon_parser.sizes import parse_size
+from poizon_parser.sizes import parse_size, parse_size_query
 
 FIXTURE = Path(__file__).parent / "fixtures" / "product_nb530.json"
 
@@ -58,6 +60,40 @@ class TestNormalizeScale(unittest.TestCase):
 
     def test_none(self):
         self.assertIsNone(normalize_scale(None))
+
+
+class TestResolveQueryScale(unittest.TestCase):
+    """Общее правило: шкала из строки размера против явно выбранной."""
+
+    def resolve(self, size, explicit, default=None):
+        parsed, _value = parse_size_query(size)
+        return resolve_query_scale(parsed, explicit, default)
+
+    def test_bare_us_does_not_override_gendered_scale(self):
+        # Регрессия: -s "US 7" --scale "US W" искал мужской US 7.
+        self.assertEqual(self.resolve("US 7", "US W"), US_WOMEN)
+        self.assertEqual(self.resolve("US 7", "usw"), US_WOMEN)
+        self.assertEqual(self.resolve("US 7", "US M"), US_MEN)
+
+    def test_bare_us_without_gendered_scale_is_men(self):
+        self.assertEqual(self.resolve("US 7", CM), US_MEN)
+        self.assertEqual(self.resolve("US 7", EU), US_MEN)
+        self.assertEqual(self.resolve("US 7", None), US_MEN)
+
+    def test_gendered_or_metric_scale_in_size_wins(self):
+        self.assertEqual(self.resolve("US W 7", "US M"), US_WOMEN)
+        self.assertEqual(self.resolve("US M 9", "US W"), US_MEN)
+        self.assertEqual(self.resolve("MM 265", CM), MM)
+        self.assertEqual(self.resolve("EU 43", CM), EU)
+
+    def test_explicit_then_default(self):
+        self.assertEqual(self.resolve("42", "eu"), EU)
+        self.assertEqual(self.resolve("42", None, default=CM), CM)
+        self.assertIsNone(resolve_query_scale(None, None))
+
+    def test_unknown_scale_in_size_is_kept_for_validation(self):
+        # Незнакомая шкала не подменяется явной: вызывающий должен её отклонить.
+        self.assertEqual(self.resolve("JP 27", CM), "JP")
 
 
 class TestSizeChartParsing(unittest.TestCase):

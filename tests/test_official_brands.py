@@ -4,6 +4,7 @@ import threading
 import unittest
 
 from poizon_parser.catalog import Brand
+from poizon_parser.client import ChallengeRequired
 from poizon_parser.finder import SizeFinder
 from poizon_parser.models import Product, SearchItem, SizeOffer
 from poizon_parser.sizechart import CM, EU, US_MEN, US_WOMEN, official_charts
@@ -217,6 +218,92 @@ class TestFindByBrandScale(unittest.TestCase):
     def test_explicit_gender_in_size_string_wins(self):
         matches = self.find("US W 10", scale="US M")
         self.assertEqual(matches[0].requested_scale, US_WOMEN)
+
+    def test_numeric_size_with_gendered_scale(self):
+        # Так зовёт CLI: число уже разобрано, шкала — каноническая.
+        matches = self.find(10.0, scale="usw")
+        self.assertEqual(matches[0].requested_scale, US_WOMEN)
+
+    def test_scale_in_size_string_selects_brands_for_all_brands(self):
+        # «US M 9» при scale=CM — поиск по US M: Puma (без замера стопы)
+        # участвует, как и при явной scale=US M.
+        _catalog, _matches, seen = run(scale=CM, size="US M 9")
+        self.assertIn("Puma", {name for name, _ in seen})
+
+
+class ChallengeCatalog(FakeCatalog):
+    """У каждого бренда несколько карточек: spu = номер бренда * 10 + i."""
+
+    def brand_items(self, brand, max_items=None, include_kids=False):
+        return [
+            SearchItem(
+                spu_id=brand.brand_id * 10 + index,
+                title=brand.name,
+                url=f"/product/{brand.brand_id * 10 + index}",
+            )
+            for index in range(3)
+        ]
+
+
+class ChallengeFinder(StubFinder):
+    """Карточка blocked отвечает проверкой; цена падает с номером карточки."""
+
+    def __init__(self, catalog, blocked):
+        super().__init__(catalog)
+        self.blocked = blocked
+
+    def load_product(self, item):
+        if item.spu_id == self.blocked:
+            raise ChallengeRequired("https://www.thepoizon.ru/x", "captcha")
+        price = self.catalog.prices[item.title] - (item.spu_id % 10) * 100
+        return make_product(item.spu_id, item.title, price)
+
+
+class TestChallengeKeepsPartial(unittest.TestCase):
+    """Регрессия: при проверке сайта находки до неё терялись."""
+
+    def test_find_by_brand_attaches_sorted_partial(self):
+        catalog = ChallengeCatalog(PRICES)
+        nike = catalog.find_brand("Nike").brand_id
+        finder = ChallengeFinder(catalog, blocked=nike * 10 + 2)
+        with self.assertRaises(ChallengeRequired) as ctx:
+            finder.find_by_brand("Nike", size="26,2", scale=CM, catalog=catalog)
+        partial = ctx.exception.partial
+        # Найдены две карточки до проверки, дешёвая — первой, как в выдаче.
+        self.assertEqual(
+            [m.product.spu_id for m in partial], [nike * 10 + 1, nike * 10]
+        )
+
+    def test_all_brands_partial_includes_previous_brands(self):
+        catalog = ChallengeCatalog(PRICES)
+        charts = [chart.name for chart in official_charts(CM)]
+        blocked_brand = charts[2]
+        blocked = catalog.find_brand(blocked_brand).brand_id * 10 + 1
+        finder = ChallengeFinder(catalog, blocked=blocked)
+        seen = []
+        with self.assertRaises(ChallengeRequired) as ctx:
+            finder.find_in_official_brands(
+                size="26,2", scale=CM, catalog=catalog,
+                on_brand=lambda name, found: seen.append((name, len(found))),
+            )
+        partial = ctx.exception.partial
+        brands = {m.product.brand for m in partial}
+        self.assertEqual(brands, set(charts[:3]))
+        prices = [m.offer.price for m in partial]
+        self.assertEqual(prices, sorted(prices))
+        # Прерванный бренд тоже попал в сводку — с тем, что успели найти.
+        self.assertEqual(seen, [(charts[0], 3), (charts[1], 3), (blocked_brand, 1)])
+
+    def test_all_brands_partial_respects_total_limit(self):
+        catalog = ChallengeCatalog(PRICES)
+        charts = [chart.name for chart in official_charts(CM)]
+        blocked = catalog.find_brand(charts[2]).brand_id * 10
+        finder = ChallengeFinder(catalog, blocked=blocked)
+        with self.assertRaises(ChallengeRequired) as ctx:
+            finder.find_in_official_brands(
+                size="26,2", scale=CM, catalog=catalog, total_limit=2
+            )
+        self.assertEqual(len(ctx.exception.partial), 2)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -158,6 +159,77 @@ class TestFrontendStaticFiles(unittest.TestCase):
         )
         items = json.loads(body)["items"]
         self.assertEqual([item["match"]["spu_id"] for item in items], [7])
+
+    def test_foreign_cookie_before_uid_does_not_hide_it(self) -> None:
+        # Регрессия: SimpleCookie на первом непонятном значении молча бросал
+        # все следующие cookie. Cookie localhost общие для всех портов, и
+        # JSON-cookie соседнего приложения «прятала» poizon_uid: каждый запрос
+        # получал новый uid, итоги не читались, а POST плодил файлы-сироты.
+        picks_dir = self.use_temp_picks()
+        uid = "ab12" * 8
+        cookie = f'other={{"k":1}}; poizon_uid={uid}'
+
+        status, headers, body = self.request(
+            "POST",
+            "/api/picks",
+            body=b'{"match": {"spu_id": 7, "sku_id": 8}, "query": {}}',
+            headers={"Content-Type": "application/json", "Cookie": cookie},
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["created"])
+        self.assertNotIn("set-cookie", headers)
+
+        status, headers, body = self.request(
+            "GET", "/api/picks", headers={"Cookie": cookie}
+        )
+        self.assertEqual(status, 200)
+        self.assertNotIn("set-cookie", headers)
+        items = json.loads(body)["items"]
+        self.assertEqual([item["match"]["spu_id"] for item in items], [7])
+        self.assertEqual(
+            sorted(path.name for path in picks_dir.iterdir()), [f"{uid}.json"]
+        )
+
+    def test_uid_found_among_any_foreign_cookies(self) -> None:
+        self.use_temp_picks()
+        uid = "cd34" * 8
+        cookies = (
+            f"a=b c; poizon_uid={uid}",
+            f"a=\\x; poizon_uid={uid}; z=1",
+            f"poizon_uid={uid}; other={{\"k\":1}}",
+            # Не-ASCII в соседней cookie: заголовок уходит как есть, байтами.
+            f"a=привет; poizon_uid={uid}".encode("utf-8"),
+        )
+        for cookie in cookies:
+            with self.subTest(cookie=cookie):
+                status, headers, _ = self.request(
+                    "GET", "/api/health", headers={"Cookie": cookie}
+                )
+                self.assertEqual(status, 200)
+                self.assertNotIn("set-cookie", headers)
+
+    def test_uid_cookie_name_must_match_exactly(self) -> None:
+        self.use_temp_picks()
+        status, headers, _ = self.request(
+            "GET", "/api/health", headers={"Cookie": f"xpoizon_uid={'ab12' * 8}"}
+        )
+        self.assertEqual(status, 200)
+        self.assertIn("set-cookie", headers)
+
+    @unittest.skipUnless(
+        os.name in ("nt", "posix"),
+        "отказ bind на занятом порту гарантирован только на Windows и POSIX",
+    )
+    def test_second_server_on_busy_port_fails(self) -> None:
+        # Регрессия: на Windows SO_REUSEADDR давал второму «main.py web»
+        # молча занять тот же порт — теперь занятый порт даёт OSError.
+        with self.assertRaises(OSError):
+            second = webapp.App(("127.0.0.1", self.server.server_port))
+            second.server_close()
+
+    @unittest.skipUnless(os.name == "nt", "флаг выключается только на Windows")
+    def test_reuse_address_disabled_on_windows(self) -> None:
+        self.assertFalse(webapp.App.allow_reuse_address)
 
     def test_missing_pick_delete_is_explained(self) -> None:
         self.use_temp_picks()

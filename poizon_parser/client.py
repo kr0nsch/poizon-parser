@@ -20,6 +20,7 @@ import http.cookiejar
 import json
 import random
 import re
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -61,6 +62,10 @@ class ChallengeRequired(PoizonError):
         super().__init__(f"требуется пройти проверку на {url} ({reason})")
         self.url = url
         self.reason = reason
+        #: Что поиск успел найти до проверки (SizeFinder дописывает сюда
+        #: находки, отсортированные как обычная выдача), — чтобы обрыв не
+        #: уносил уже собранные результаты.
+        self.partial: list = []
 
 
 class Cancelled(Exception):
@@ -263,8 +268,9 @@ class PoizonClient:
     # ------------------------------------------------------------------ utils
 
     def _log(self, message: str) -> None:
+        # В stderr: stdout — это результат, его перенаправляют в файл.
         if self.verbose:
-            print(f"  [client] {message}")
+            print(f"  [client] {message}", file=sys.stderr)
 
     def _emit(self, kind: str, **detail) -> None:
         """Сообщает наружу о текущем действии и обновляет heartbeat."""

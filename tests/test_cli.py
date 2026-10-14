@@ -253,12 +253,104 @@ class TestShoesSizeValidation(CliCase):
         self.assertIn("--scale EU", err)
         built.assert_not_called()
 
+    def test_bare_us_keeps_explicit_gendered_scale(self):
+        # Регрессия: голое «US» из -s перебивало --scale "US W" → мужской US 7.
+        self.assertEqual(cli._foot_size("US 7", "US W"), (7.0, "US W"))
+        self.assertEqual(cli._foot_size("US 7", "US M"), (7.0, "US M"))
+        self.assertEqual(cli._foot_size("US 7", "CM"), (7.0, "US M"))
+        self.assertEqual(cli._foot_size("US W 7", "US M"), (7.0, "US W"))
+        for command in (["shoes", "-b", "nike"], ["allbrands"]):
+            with self.subTest(command=command[0]):
+                finder = FakeFinder()
+                with mock.patch.object(cli, "_build_finder", return_value=finder):
+                    run_cli([*command, "-s", "US 7", "--scale", "US W"])
+                self.assertEqual(finder.calls[0][1]["scale"], "US W")
+
+    def test_millimetres_out_of_range_reported_in_mm(self):
+        for extra in (["-s", "1000", "--scale", "MM"], ["-s", "MM 1000"]):
+            with self.subTest(extra=extra):
+                built = self.no_network()
+                code, _, err = run_cli(["shoes", "-b", "nike", *extra])
+                self.assertEqual(code, 2)
+                self.assertIn("1000 мм", err)
+                self.assertIn("150–400 мм", err)
+                # Миллиметры человек уже указал — советовать MM или EU незачем.
+                self.assertNotIn("--scale MM", err)
+                self.assertNotIn("--scale EU", err)
+                built.assert_not_called()
+
+    def test_centimetres_given_as_millimetres_hint(self):
+        built = self.no_network()
+        code, _, err = run_cli(["shoes", "-b", "nike", "-s", "26,5", "--scale", "MM"])
+        self.assertEqual(code, 2)
+        self.assertIn("26,5 мм", err)
+        self.assertIn("уберите MM", err)
+        built.assert_not_called()
+
+    def test_negative_size_rejected(self):
+        # Регрессия: «-s -42 --scale EU» искал EU 42.
+        cases = [
+            ["shoes", "-b", "nike", "-s", "-42", "--scale", "EU"],
+            ["shoes", "-b", "nike", "-s", "−26,5"],
+            ["allbrands", "-s", "–26,5"],
+            ["find", "-q", "nike", "-s", "-42"],
+        ]
+        for argv in cases:
+            with self.subTest(argv=argv):
+                built = self.no_network()
+                code, _, err = run_cli(argv)
+                self.assertEqual(code, 2)
+                self.assertIn("размер должен быть больше нуля", err)
+                built.assert_not_called()
+
+    def test_huge_size_is_friendly_error(self):
+        # Регрессия: inf из длинного числа ронял _num с OverflowError.
+        huge = "9" * 400
+        cases = [
+            ["shoes", "-b", "nike", "-s", huge],
+            ["shoes", "-b", "nike", "-s", huge, "--scale", "EU"],
+            ["allbrands", "-s", huge],
+            ["find", "-q", "nike", "-s", huge],
+        ]
+        for argv in cases:
+            with self.subTest(argv=argv[:2]):
+                built = self.no_network()
+                code, _, err = run_cli(argv)
+                self.assertEqual(code, 2)
+                self.assertIn("слишком большое число", err)
+                self.assertNotIn("Traceback", err)
+                built.assert_not_called()
+
     def test_find_rejects_us_inside_size(self):
         built = self.no_network()
         code, _, err = run_cli(["find", "-q", "nike", "-s", "US 9"])
         self.assertEqual(code, 2)
         self.assertIn("RU и EU", err)
         built.assert_not_called()
+
+    def test_find_rejects_foreign_scale_in_size_even_with_scale(self):
+        # Регрессия: «US 9» --scale EU молча теряло «US» и искало EU 9.
+        for size in ("US 9", "US W 7", "CM 26", "UK 8"):
+            with self.subTest(size=size):
+                built = self.no_network()
+                code, _, err = run_cli(["find", "-q", "nike", "-s", size, "--scale", "EU"])
+                self.assertEqual(code, 2)
+                self.assertIn("RU и EU", err)
+                built.assert_not_called()
+
+    def test_find_rejects_conflicting_scales(self):
+        built = self.no_network()
+        code, _, err = run_cli(["find", "-q", "nike", "-s", "RU 42", "--scale", "EU"])
+        self.assertEqual(code, 2)
+        self.assertIn("не совпадает", err)
+        built.assert_not_called()
+
+    def test_find_same_scale_twice_is_fine(self):
+        finder = FakeFinder()
+        self.patch_finder(finder)
+        code, _, _ = run_cli(["find", "-q", "nike", "-s", "eu 42", "--scale", "EU"])
+        self.assertEqual(code, 1)  # ничего не нашлось — но поиск был
+        self.assertEqual(finder.calls[0][1]["scale"], "EU")
 
 
 # -------------------------------------------------------------- allbrands
@@ -327,6 +419,12 @@ class TestFormatting(unittest.TestCase):
         self.assertEqual(cli._num(36.6667), "36⅔")
         self.assertEqual(cli._num(36 + 2 / 3), "36⅔")
         self.assertEqual(cli._num(22.25), "22,25")
+
+    def test_num_non_finite(self):
+        # math.floor(inf) — OverflowError; вывод не должен падать.
+        self.assertEqual(cli._num(float("inf")), "∞")
+        self.assertEqual(cli._num(float("-inf")), "-∞")
+        self.assertEqual(cli._num(float("nan")), "—")
 
     def test_fit_hint(self):
         self.assertEqual(cli._fit_hint("Размер больше, возьмите размер -0,5"), "-0,5")
@@ -439,6 +537,42 @@ class TestOutputFiles(CliCase):
         code, _, err = run_cli(["shoes", "-b", "nike", "-s", "26,5", "-f", "html", "-o", str(target)])
         self.assertEqual(code, 2)
         self.assertIn("папку", err)
+        built.assert_not_called()
+
+    def test_dir_probe_leaves_nothing_behind(self):
+        # Недостающие папки проверка создаёт и убирает за собой.
+        target = self.tmp / "new" / "reports"
+        self.assertIsNone(cli._dir_problem(str(target)))
+        self.assertFalse((self.tmp / "new").exists())
+        # В существующей папке не остаётся пробного файла.
+        self.assertIsNone(cli._dir_problem(str(self.tmp)))
+        self.assertEqual(list(self.tmp.iterdir()), [])
+
+    def test_html_out_unwritable_fails_before_scan(self):
+        # Регрессия: проверялось лишь, что есть папка-предок, — запрет записи
+        # всплывал в write_report после всего обхода и уносил результаты.
+        built = self.no_network()
+        target = self.tmp / "new" / "reports"
+        denied = PermissionError(13, "Permission denied")
+        with mock.patch.object(cli.tempfile, "TemporaryFile", side_effect=denied):
+            code, _, err = run_cli(
+                ["shoes", "-b", "nike", "-s", "26,5", "-f", "html", "-o", str(target)]
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("нельзя записать отчёт", err)
+        self.assertIn("Permission denied", err)
+        built.assert_not_called()
+        self.assertFalse((self.tmp / "new").exists())
+
+    @unittest.skipUnless(os.name == "nt", "«<» недопустим в именах только на Windows")
+    def test_html_out_invalid_name_fails_before_scan(self):
+        built = self.no_network()
+        target = self.tmp / "rep<ort"
+        code, _, err = run_cli(
+            ["allbrands", "-s", "26,5", "-f", "html", "-o", str(target)]
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("нельзя записать отчёт", err)
         built.assert_not_called()
 
 
@@ -598,6 +732,108 @@ class TestFriendlyErrors(CliCase):
             code, _, err = run_cli(["web", "--no-open", "--host", "nohost.invalid"])
         self.assertEqual(code, 2)
         self.assertIn("не удалось запустить сервер", err)
+
+
+# ------------------------------------------- обрыв поиска проверкой сайта
+
+
+def challenge(partial=()):
+    exc = ChallengeRequired("https://www.thepoizon.ru/x", "captcha")
+    exc.partial = list(partial)
+    return exc
+
+
+class InterruptedFinder(FakeFinder):
+    """Проверку не прошли (например, «q»): находки до неё — в exc.partial."""
+
+    def __init__(self, partial=(), brands=()):
+        super().__init__()
+        self.partial = list(partial)
+        self.brands = list(brands)  # [(бренд, находки)], пройденные до обрыва
+
+    def find_by_brand(self, **kwargs):
+        self.calls.append(("find_by_brand", kwargs))
+        raise challenge(self.partial)
+
+    def find_in_official_brands(self, **kwargs):
+        self.calls.append(("find_in_official_brands", kwargs))
+        for name, found in self.brands:
+            kwargs["on_brand"](name, found)
+        raise challenge(self.partial)
+
+    def find(self, **kwargs):
+        self.calls.append(("find", kwargs))
+        raise challenge(self.partial)
+
+
+class TestInterruptedSearch(CliCase):
+    """Регрессия: обрыв проверкой уносил всё, что поиск успел найти."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+        self.partial = [make_match(1, 9990.0), make_match(2, 12990.0)]
+
+    def assert_interrupted(self, code, err, count="2 модели"):
+        self.assertEqual(code, 2)  # тот же код, что и при ошибке сайта
+        self.assertIn("требуется пройти проверку", err)
+        self.assertIn("прерван проверкой сайта", err)
+        self.assertIn(count, err)
+
+    def test_shoes_table_shows_partial(self):
+        self.patch_finder(InterruptedFinder(self.partial))
+        code, out, err = run_cli(["shoes", "-b", "nike", "-s", "26,5"])
+        self.assert_interrupted(code, err)
+        self.assertIn("Кроссовки 1", out)
+        self.assertIn("Кроссовки 2", out)
+        self.assertIn("В наличии: 2 модели", out)
+
+    def test_shoes_json_file_keeps_partial(self):
+        self.patch_finder(InterruptedFinder(self.partial))
+        path = self.tmp / "result.json"
+        code, _, err = run_cli(
+            ["shoes", "-b", "nike", "-s", "26,5", "-f", "json", "-o", str(path)]
+        )
+        self.assert_interrupted(code, err)
+        rows = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual([row["spu_id"] for row in rows], [1, 2])
+
+    def test_shoes_html_report_keeps_partial(self):
+        self.patch_finder(InterruptedFinder(self.partial))
+        target = self.tmp / "reports"
+        code, out, err = run_cli(
+            ["shoes", "-b", "nike", "-s", "26,5", "-f", "html", "-o", str(target)]
+        )
+        self.assert_interrupted(code, err)
+        self.assertEqual(len(list(target.glob("*/index.html"))), 1)
+        self.assertIn("Отчёт готов", out)
+
+    def test_nothing_found_before_check_is_plain_error(self):
+        self.patch_finder(InterruptedFinder())
+        code, out, err = run_cli(["shoes", "-b", "nike", "-s", "26,5"])
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn("требуется пройти проверку", err)
+        self.assertNotIn("прерван", err)
+
+    def test_allbrands_shows_partial(self):
+        adidas = make_match(2, 12990.0, brand="Adidas")
+        finder = InterruptedFinder(
+            [self.partial[0], adidas], brands=[("Nike", [self.partial[0]])]
+        )
+        self.patch_finder(finder)
+        code, out, err = run_cli(["allbrands", "-s", "26,5"])
+        self.assert_interrupted(code, err)
+        self.assertIn("Nike", out)
+        self.assertIn("Adidas", out)
+        self.assertIn("Список неполный", out)
+
+    def test_find_shows_partial(self):
+        self.patch_finder(InterruptedFinder(self.partial[:1]))
+        code, out, err = run_cli(["find", "-q", "nike", "-s", "42"])
+        self.assert_interrupted(code, err, count="1 модель")
+        self.assertIn("Кроссовки 1", out)
 
 
 # --------------------------------------------------------------- капча

@@ -191,6 +191,12 @@ class TestChallengeStopsSearch(unittest.TestCase):
         # Следующие карточки к заблокированному сайту не запрашиваются.
         self.assertEqual(finder.loaded, [1])
 
+    def test_find_challenge_keeps_found_before_it(self):
+        finder = StubSearchFinder({3: ChallengeRequired("https://x", "captcha")})
+        with self.assertRaises(ChallengeRequired) as ctx:
+            finder.find("adidas", "42")
+        self.assertEqual([m.product.spu_id for m in ctx.exception.partial], [1, 2])
+
     def test_find_propagates_cancel(self):
         finder = StubSearchFinder({2: Cancelled()})
         with self.assertRaises(Cancelled):

@@ -216,5 +216,56 @@ class TestParallelScan(unittest.TestCase):
         self.assertNotIn(4, finder.loaded)
 
 
+class BlockedFinder(StubFinder):
+    """Карточка blocked отвечает проверкой сайта."""
+
+    def __init__(self, products, blocked):
+        super().__init__(products)
+        self.blocked = blocked
+
+    def load_product(self, item):
+        if item.spu_id == self.blocked:
+            raise ChallengeRequired("https://x", "captcha")
+        return super().load_product(item)
+
+
+class TestChallengeKeepsPartial(unittest.TestCase):
+    """Регрессия: проверка сайта уносила всё, что обход успел найти."""
+
+    def setUp(self):
+        self.items = [
+            SearchItem(spu_id=i, title=str(i), url=f"/product/{i}")
+            for i in range(1, 9)
+        ]
+        self.products = {
+            item.spu_id: make_product(item.spu_id, 5000.0 + item.spu_id)
+            for item in self.items
+        }
+
+    def test_sequential_scan_attaches_found(self):
+        finder = BlockedFinder(self.products, blocked=4)
+        with self.assertRaises(ChallengeRequired) as ctx:
+            finder.scan_products(self.items, 42.0, "EU")
+        self.assertEqual([m.product.spu_id for m in ctx.exception.partial], [1, 2, 3])
+
+    def test_parallel_scan_attaches_found(self):
+        # workers=2 → порции по 4: первая порция целиком найдена до проверки.
+        finder = BlockedFinder(self.products, blocked=5)
+        seen = []
+        with self.assertRaises(ChallengeRequired) as ctx:
+            finder.scan_products(self.items, 42.0, "EU", workers=2, on_match=seen.append)
+        partial = ctx.exception.partial
+        self.assertTrue({1, 2, 3, 4} <= {m.product.spu_id for m in partial})
+        self.assertNotIn(5, {m.product.spu_id for m in partial})
+        # В partial ровно то, что уже ушло в on_match (веб видит то же самое).
+        self.assertEqual(partial, seen)
+
+    def test_challenge_on_first_card_gives_empty_partial(self):
+        finder = BlockedFinder(self.products, blocked=1)
+        with self.assertRaises(ChallengeRequired) as ctx:
+            finder.scan_products(self.items, 42.0, "EU")
+        self.assertEqual(ctx.exception.partial, [])
+
+
 if __name__ == "__main__":
     unittest.main()

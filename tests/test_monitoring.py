@@ -26,6 +26,20 @@ class _Resp:
         return False
 
 
+class TestVerboseLog(unittest.TestCase):
+    def test_verbose_log_goes_to_stderr(self):
+        # stdout — результат команды; журнал -v не должен в него попадать.
+        import contextlib
+        import io
+
+        out, err = io.StringIO(), io.StringIO()
+        client = PoizonClient(verbose=True)
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            client._log("проверка")
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn("[client] проверка", err.getvalue())
+
+
 class TestActivityTelemetry(unittest.TestCase):
     def test_emits_request_and_response(self):
         events = []

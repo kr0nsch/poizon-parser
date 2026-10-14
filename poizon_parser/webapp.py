@@ -24,7 +24,6 @@ import time
 import traceback
 import uuid
 import webbrowser
-from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Optional
@@ -34,7 +33,7 @@ from .catalog import Catalog
 from .client import Cancelled, ChallengeRequired, PoizonClient, PoizonError
 from .finder import SizeFinder
 from .report import RESULT_DIR, write_report
-from .sizechart import EU, normalize_scale, resolve_official_chart
+from .sizechart import EU, resolve_official_chart, resolve_query_scale
 from .sizes import parse_size_query
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -48,6 +47,14 @@ UID_COOKIE = "poizon_uid"
 #: Как выглядит выданный сервером uid (uuid4().hex). Всё прочее — как без
 #: cookie: иначе мусорные значения сводились бы к общему файлу итогов.
 UID_RE = re.compile(r"[0-9a-f]{8,32}")
+#: uid прямо из заголовка Cookie. SimpleCookie здесь не годится: на первом же
+#: значении, которое он не понимает (JSON, пробел, обратный слеш, кириллица),
+#: он молча отбрасывает все следующие cookie. А cookie localhost общие для
+#: всех портов — соседнее локальное приложение легко подложит такую, и тогда
+#: каждый запрос получал бы новый uid, а итоги не читались бы обратно.
+_UID_COOKIE_RE = re.compile(
+    r"(?:^|;)\s*" + re.escape(UID_COOKIE) + r"=(" + UID_RE.pattern + r")\s*(?:;|$)"
+)
 
 #: Сколько строк лога держим в задаче (фронтенд показывает хвост).
 LOG_LIMIT = 300
@@ -401,6 +408,9 @@ class JobManager:
                 for key, value in job.items()
                 if not key.startswith("_") and key not in ("cancel", "params")
             }
+            client_stats = job.get("_client_stats")
+            if client_stats is not None:
+                snap["stats"] = dict(client_stats)
         # Секунды с последней активности считаем на сервере — не зависит от
         # рассинхрона часов браузера; по этому числу интерфейс ловит «застой».
         if job["status"] in ("running", "captcha"):
@@ -620,6 +630,9 @@ class JobManager:
             on_cooldown=lambda wait, reason: self._note_cooldown(job, wait, reason),
             on_activity=lambda kind, detail: self._note_activity(job, kind, detail),
         )
+        # Счётчики клиента: снимок задачи читает их на лету, чтобы строка
+        # статистики под прогрессом обновлялась во время поиска.
+        job["_client_stats"] = client.stats
         # Демо/тест обработки капчи без ожидания реального 429.
         demo = os.environ.get("POIZON_DEMO_CAPTCHA")
         if demo and demo.isdigit():
@@ -643,7 +656,9 @@ class JobManager:
         job["brand"] = {"name": brand.name, "url": brand.url, "id": brand.brand_id}
 
         parsed_scale, size_value = parse_size_query(str(params.get("size") or ""))
-        scale = normalize_scale(parsed_scale or params.get("scale")) or EU
+        # То же правило, что у CLI и SizeFinder: голое «US» в размере не
+        # перебивает выбранную в форме «US W».
+        scale = resolve_query_scale(parsed_scale, params.get("scale"), default=EU)
 
         max_price = params.get("maxPrice")
         min_price = params.get("minPrice")
@@ -713,7 +728,6 @@ class JobManager:
         )
         if job["cancel"]:
             raise Cancelled()
-        job["stats"] = dict(client.stats)
 
 
 # -------------------------------------------------------------------- server
@@ -723,6 +737,13 @@ class App(ThreadingHTTPServer):
     """HTTP-сервер с общим состоянием."""
 
     daemon_threads = True
+    #: На Windows SO_REUSEADDR позволяет второму серверу молча занять уже
+    #: слушающий порт — тогда два «python main.py web» делят один адрес и
+    #: запросы уходят куда попало. Без флага занятый порт даёт OSError, а
+    #: cli.cmd_web превращает его в понятное сообщение. На POSIX флаг нужен,
+    #: чтобы перезапуск не упирался в TIME_WAIT, и чужой слушающий порт он
+    #: там не отдаёт.
+    allow_reuse_address = os.name != "nt"
 
     def __init__(self, address: tuple[str, int]) -> None:
         super().__init__(address, Handler)
@@ -801,20 +822,15 @@ class Handler(BaseHTTPRequestHandler):
 
     # -------- идентификация пользователя (многопользовательский режим) --------
 
-    def _cookies(self) -> dict:
-        jar = SimpleCookie()
-        raw = self.headers.get("Cookie")
-        if raw:
-            try:
-                jar.load(raw)
-            except CookieError:
-                return {}
-        return {k: v.value for k, v in jar.items()}
-
     def _cookie_uid(self) -> Optional[str]:
-        """uid из cookie, если он похож на выданный сервером, иначе None."""
-        value = self._cookies().get(UID_COOKIE, "")
-        return value if UID_RE.fullmatch(value) else None
+        """uid из cookie, если он похож на выданный сервером, иначе None.
+
+        Ищем только свою пару в сыром заголовке: чужие cookie с любыми
+        значениями до или после неё на результат не влияют.
+        """
+        raw = "; ".join(self.headers.get_all("Cookie") or [])
+        match = _UID_COOKIE_RE.search(raw)
+        return match.group(1) if match else None
 
     def _uid(self) -> str:
         """Идентификатор пользователя: из cookie или новый для этого запроса.
