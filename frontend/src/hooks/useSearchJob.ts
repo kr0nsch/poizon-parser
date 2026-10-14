@@ -86,7 +86,10 @@ export function useSearchJob(jobId: string | null | undefined) {
 
       return SEARCH_JOB_POLL_INTERVAL_MS
     },
-    refetchIntervalInBackground: false,
+    // Опрашиваем и из фоновой вкладки: пользователь уходит на POIZON
+    // проходить капчу, а сервер считает задачу без опросов брошенной.
+    // Браузер сам замедляет таймеры скрытых вкладок, сервер — локальный.
+    refetchIntervalInBackground: true,
     retry: (failureCount, error) => {
       if (isPermanentPollError(error)) {
         return false

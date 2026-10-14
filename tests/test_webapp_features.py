@@ -111,6 +111,69 @@ class TestSearchScale(unittest.TestCase):
         self.assertEqual(self.scan_args("42"), (42.0, "EU"))
 
 
+class TestSizeOutsideBrandChart(unittest.TestCase):
+    """Размер вне официальной таблицы бренда — ошибка до сбора каталога."""
+
+    def run_search(self, brand_name, params):
+        manager = JobManager()
+        job = JobManager._new_job(params)
+        with patch.object(webapp, "PoizonClient") as client_class, \
+                patch.object(webapp, "Catalog") as catalog_class, \
+                patch.object(webapp, "SizeFinder") as finder_class:
+            client_class.return_value.stats = {}
+            catalog = catalog_class.return_value
+            catalog.find_brand.return_value = Brand(
+                brand_id=1, name=brand_name, url="/brand/x"
+            )
+            catalog.brand_items.return_value = []
+            try:
+                manager._search(job, params)
+            finally:
+                self.brand_items = catalog.brand_items
+                self.scan = finder_class.return_value.scan_products
+
+    def test_out_of_chart_size_fails_before_catalog(self):
+        # Регрессия: такой поиск скачивал все карточки бренда ради пустого итога.
+        cases = (
+            ("Nike", {"brand": "nike", "size": "18", "scale": "CM"}),
+            ("Puma", {"brand": "puma", "size": "30", "scale": "US W",
+                      "gender": "women"}),
+        )
+        for brand_name, params in cases:
+            with self.subTest(brand=brand_name, params=params):
+                with self.assertRaises(ValueError) as ctx:
+                    self.run_search(brand_name, params)
+                message = str(ctx.exception)
+                self.assertIn("вне официальной таблицы", message)
+                self.assertIn(brand_name, message)
+                self.assertIn("Проверьте", message)
+                self.brand_items.assert_not_called()
+                self.scan.assert_not_called()
+
+    def test_size_inside_chart_still_searches(self):
+        self.run_search("Nike", {"brand": "nike", "size": "26.5", "scale": "CM"})
+        self.brand_items.assert_called_once()
+        self.scan.assert_called_once()
+
+    def test_job_reports_the_reason(self):
+        manager = JobManager()
+        params = {"brand": "nike", "size": "18", "scale": "CM"}
+        job = JobManager._new_job(params)
+        manager._jobs[job["id"]] = job
+        with patch.object(webapp, "PoizonClient") as client_class, \
+                patch.object(webapp, "Catalog") as catalog_class, \
+                patch.object(webapp, "SizeFinder"):
+            client_class.return_value.stats = {}
+            catalog_class.return_value.find_brand.return_value = Brand(
+                brand_id=1, name="Nike", url="/brand/nike"
+            )
+            manager._run(job)
+        snap = manager.snapshot(job["id"])
+        self.assertEqual(snap["status"], "error")
+        self.assertIn("вне официальной таблицы Nike", snap["error"])
+        catalog_class.return_value.brand_items.assert_not_called()
+
+
 class TestLiveStats(unittest.TestCase):
     """Строка статистики под прогрессом обновляется во время поиска."""
 
@@ -182,6 +245,61 @@ class TestJobRetention(unittest.TestCase):
         manager._jobs["b"] = {"id": "b", "status": "done"}
         manager._jobs["c"] = {"id": "c", "status": "captcha"}
         self.assertEqual(manager.count(), {"total": 3, "active": 2})
+
+
+class TestActiveJobLimit(unittest.TestCase):
+    """Одновременных поисков — не больше MAX_ACTIVE_JOBS."""
+
+    def setUp(self):
+        # Потоки задач не запускаем: без сети при любом исходе теста.
+        run = patch.object(JobManager, "_run")
+        run.start()
+        self.addCleanup(run.stop)
+        limit = patch.object(webapp, "MAX_ACTIVE_JOBS", 2)
+        limit.start()
+        self.addCleanup(limit.stop)
+
+    def test_create_refuses_over_limit(self):
+        manager = JobManager()
+        add_job(manager, status="running")
+        add_job(manager, status="captcha")
+        with self.assertRaises(webapp.TooManyJobs) as ctx:
+            manager.create({"brand": "nike", "size": "26.5"})
+        self.assertIn("2 из 2", str(ctx.exception))
+        self.assertEqual(manager.count(), {"total": 2, "active": 2})
+
+    def test_finished_jobs_do_not_count(self):
+        manager = JobManager()
+        add_job(manager, status="running")
+        for status in ("done", "error", "cancelled"):
+            add_job(manager, status=status)
+        job = manager.create({"brand": "nike", "size": "26.5"})
+        self.assertIn(job["id"], manager._jobs)
+        self.assertEqual(manager.count()["active"], 2)
+
+    def test_unpolled_jobs_free_their_slots(self):
+        # Регрессия: после нескольких перезагрузок страницы во время долгих
+        # поисков новые поиски получали 429, хотя продолжать старые некому.
+        manager = JobManager()
+        stale = time.time() - webapp.ABANDON_AFTER - 1
+        old_running = add_job(manager, status="running", _last_poll=stale)
+        old_paused = add_job(manager, status="captcha", _last_poll=stale)
+
+        job = manager.create({"brand": "nike", "size": "26.5"})
+
+        self.assertIn(job["id"], manager._jobs)
+        for old in (old_running, old_paused):
+            self.assertTrue(old["cancel"])
+            self.assertTrue(old["_abandoned"])
+        self.assertEqual(manager.count()["active"], 1)
+
+    def test_polled_jobs_keep_their_slots(self):
+        manager = JobManager()
+        live = add_job(manager, status="running")
+        add_job(manager, status="running")
+        with self.assertRaises(webapp.TooManyJobs):
+            manager.create({"brand": "nike", "size": "26.5"})
+        self.assertFalse(live["cancel"])
 
 
 def wait_until(predicate, timeout: float = 2.0) -> bool:
@@ -262,6 +380,82 @@ class TestManualPause(unittest.TestCase):
         self.assertFalse(self.manager.resume(self.job["id"]))
         self.assertEqual(self.job["status"], "cancelled")
         self.assertFalse(self.manager.request_pause(self.job["id"]))
+
+
+class TestAbandonedPause(unittest.TestCase):
+    """Пауза без опросов не держит задачу вечно (вкладку закрыли на капче)."""
+
+    def setUp(self):
+        self.manager = JobManager()
+        self.job = add_job(self.manager)
+        self.addCleanup(self.manager.cancel, self.job["id"])
+
+    def wait_in_thread(self):
+        result = []
+        worker = threading.Thread(
+            target=lambda: result.append(
+                self.manager._wait_for_captcha(self.job, {"reason": "captcha", "url": "u"})
+            ),
+            daemon=True,
+        )
+        worker.start()
+        return worker, result
+
+    def test_unpolled_pause_cancels_itself(self):
+        with patch.object(webapp, "ABANDON_AFTER", 0.05):
+            worker, result = self.wait_in_thread()
+            worker.join(timeout=2)
+        self.assertFalse(worker.is_alive(), "пауза без опросов не закончилась")
+        self.assertEqual(result, [False])
+        self.assertTrue(self.job["cancel"])
+        self.assertIn("брошена", self.job["log"][-1])
+
+    def test_polling_keeps_pause_alive(self):
+        with patch.object(webapp, "ABANDON_AFTER", 0.3):
+            worker, result = self.wait_in_thread()
+            self.assertTrue(wait_until(lambda: self.job["paused"]))
+            deadline = time.monotonic() + 0.8
+            while time.monotonic() < deadline:
+                self.manager.snapshot(self.job["id"])  # вкладка открыта
+                time.sleep(0.05)
+            self.assertTrue(worker.is_alive(), "опрашиваемую паузу бросили")
+            self.assertFalse(self.job["cancel"])
+
+            self.assertTrue(self.manager.resume(self.job["id"]))
+            worker.join(timeout=2)
+        self.assertEqual(result, [True])
+
+    def test_abandoned_job_finishes_and_is_evictable(self):
+        def search(job, params):
+            # Как клиент: проверка не пройдена — запрос прерывается.
+            if not self.manager._wait_for_captcha(job, {"reason": "captcha", "url": "u"}):
+                raise webapp.Cancelled()
+
+        self.manager._search = search
+        with patch.object(webapp, "ABANDON_AFTER", 0.05):
+            worker = threading.Thread(
+                target=self.manager._run, args=(self.job,), daemon=True
+            )
+            worker.start()
+            worker.join(timeout=2)
+        self.assertFalse(worker.is_alive())
+        snap = self.manager.snapshot(self.job["id"])
+        self.assertEqual(snap["status"], "cancelled")
+        self.assertIn("задача брошена", snap["stop_reason"])
+        self.assertFalse(snap["paused"])
+        self.assertEqual(self.manager.count()["active"], 0)
+        with patch.object(webapp, "JOB_RETENTION", 0), self.manager._lock:
+            self.manager._evict_old()
+        self.assertIsNone(self.manager.get(self.job["id"]))
+
+    def test_user_cancel_keeps_its_own_reason(self):
+        def search(job, params):
+            job["cancel"] = True
+            raise webapp.Cancelled()
+
+        self.manager._search = search
+        self.manager._run(self.job)
+        self.assertEqual(self.job["stop_reason"], "остановлено пользователем")
 
 
 class _RecordingJob(dict):

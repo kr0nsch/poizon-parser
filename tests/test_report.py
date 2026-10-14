@@ -1,10 +1,13 @@
 """Тесты генерации HTML-отчёта."""
 
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from poizon_parser import report
 from poizon_parser.report import (
     _fetch_data_uri,
     build_report_html,
@@ -123,19 +126,28 @@ class TestUntrustedInput(unittest.TestCase):
         self.assertIn("</html>", html)
 
     def test_only_site_cdn_images_are_downloaded(self):
-        with patch("poizon_parser.report.urllib.request.urlopen") as urlopen:
+        with patch("poizon_parser.report._open_image") as open_image:
             self.assertIsNone(_fetch_data_uri("file:///etc/passwd#x-oss-process"))
             self.assertIsNone(_fetch_data_uri("http://127.0.0.1:8765/api/picks"))
             self.assertIsNone(_fetch_data_uri("https://thepoizon.ru.evil.example/a.jpg"))
-        urlopen.assert_not_called()
+            self.assertIsNone(_fetch_data_uri("https://[broken/a.jpg"))
+        open_image.assert_not_called()
+
+    def test_plain_http_cdn_image_is_not_downloaded(self):
+        # Ответ по открытому http может подменить кто угодно на пути запроса.
+        with patch("poizon_parser.report._open_image") as open_image:
+            self.assertIsNone(
+                _fetch_data_uri("http://cdn-img.thepoizon.ru/pro-img/a.jpg")
+            )
+        open_image.assert_not_called()
 
     def test_cdn_image_is_embedded(self):
         response = MagicMock()
         response.read.return_value = b"\x89PNG"
         response.headers.get_content_type.return_value = "image/png"
-        urlopen = MagicMock()
-        urlopen.return_value.__enter__.return_value = response
-        with patch("poizon_parser.report.urllib.request.urlopen", urlopen):
+        open_image = MagicMock()
+        open_image.return_value.__enter__.return_value = response
+        with patch("poizon_parser.report._open_image", open_image):
             data = _fetch_data_uri("https://cdn-img.thepoizon.ru/pro-img/a.jpg")
         self.assertEqual(data, "data:image/png;base64,iVBORw==")
 
@@ -143,12 +155,109 @@ class TestUntrustedInput(unittest.TestCase):
         response = MagicMock()
         response.read.return_value = b"<html>"
         response.headers.get_content_type.return_value = "text/html"
-        urlopen = MagicMock()
-        urlopen.return_value.__enter__.return_value = response
-        with patch("poizon_parser.report.urllib.request.urlopen", urlopen):
+        open_image = MagicMock()
+        open_image.return_value.__enter__.return_value = response
+        with patch("poizon_parser.report._open_image", open_image):
             self.assertIsNone(
                 _fetch_data_uri("https://cdn-img.thepoizon.ru/pro-img/a.jpg")
             )
+
+    def test_redirect_to_disallowed_scheme_is_refused(self):
+        # Каждый шаг редиректа проверяется заново: с https на http — нельзя.
+        handler = report._AllowlistRedirectHandler()
+        request = report.urllib.request.Request("https://cdn.dewucdn.com/a.jpg")
+        for target in (
+            "http://cdn.dewucdn.com/a.jpg",
+            "https://127.0.0.1/a.jpg",
+            "file:///etc/passwd",
+        ):
+            with self.subTest(target=target):
+                self.assertIsNone(
+                    handler.redirect_request(request, None, 302, "Found", {}, target)
+                )
+        allowed = handler.redirect_request(
+            request, None, 302, "Found", {}, "https://img.dewucdn.com/b.jpg"
+        )
+        self.assertEqual(allowed.full_url, "https://img.dewucdn.com/b.jpg")
+
+
+class _LoopbackHandler(BaseHTTPRequestHandler):
+    """Петлевой сервер: /img — картинка, /to?u=<url> — 302 на u."""
+
+    hits: list = []
+
+    def log_message(self, *_args):
+        pass
+
+    def do_GET(self):  # noqa: N802 — API stdlib
+        type(self).hits.append(self.path)
+        if self.path.startswith("/to"):
+            from urllib.parse import parse_qs, urlsplit
+
+            target = parse_qs(urlsplit(self.path).query)["u"][0]
+            self.send_response(302)
+            self.send_header("Location", target)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        body = b"SECRET-IMAGE"
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class TestImageRedirects(unittest.TestCase):
+    """Список разрешённых хостов проверяется на каждом шаге редиректа.
+
+    Только петлевые серверы: «CDN» здесь — 127.0.0.1 (подставлен в
+    _IMAGE_HOSTS), а «внутренний» адрес — localhost, его в списке нет.
+    """
+
+    def start_server(self):
+        handler = type("Handler", (_LoopbackHandler,), {"hits": []})
+        server = HTTPServer(("127.0.0.1", 0), handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 2)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return server, handler
+
+    def setUp(self):
+        patches = (
+            patch.object(report, "_IMAGE_HOSTS", ("127.0.0.1",)),
+            patch.object(report, "_IMAGE_SCHEMES", ("http", "https")),
+        )
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        # Прокси из окружения не должен перехватывать петлевые запросы.
+        no_proxy = patch.dict(
+            "os.environ", {"no_proxy": "*", "NO_PROXY": "*"}, clear=False
+        )
+        no_proxy.start()
+        self.addCleanup(no_proxy.stop)
+
+    def test_redirect_off_allowlist_is_not_followed(self):
+        cdn, _ = self.start_server()
+        internal, internal_handler = self.start_server()
+        secret = f"http://localhost:{internal.server_port}/img"
+        url = f"http://127.0.0.1:{cdn.server_port}/to?u={secret}"
+
+        self.assertIsNone(_fetch_data_uri(url))
+        self.assertEqual(internal_handler.hits, [])
+
+    def test_redirect_within_allowlist_still_works(self):
+        cdn, handler = self.start_server()
+        target = f"http://127.0.0.1:{cdn.server_port}/img"
+        url = f"http://127.0.0.1:{cdn.server_port}/to?u={target}"
+
+        data = _fetch_data_uri(url)
+
+        self.assertEqual(data, "data:image/png;base64,U0VDUkVULUlNQUdF")
+        self.assertEqual(len(handler.hits), 2)
 
 
 class TestSlugify(unittest.TestCase):
@@ -202,6 +311,43 @@ class TestWriteReport(unittest.TestCase):
         self.assertEqual(a.name, "new-balance-26-2cm-20260101-120000")
         self.assertEqual(b.name, a.name + "-2")
         self.assertEqual(c.name, a.name + "-3")
+
+    def test_folder_name_reflects_scale(self):
+        # Регрессия: EU 42 попадал в папку «42cm».
+        cases = (
+            ({"size_input": "42", "scale": "EU"}, "nike-eu-42"),
+            ({"size_input": "9", "scale": "US M"}, "nike-us-m-9"),
+            ({"size_input": "7,5", "scale": "US W"}, "nike-us-w-7-5"),
+            ({"size_input": "8", "scale": "uk"}, "nike-uk-8"),
+            ({"size_input": "26,5", "scale": "CM"}, "nike-26-5cm"),
+            ({"size_input": "26,5", "scale": "СМ"}, "nike-26-5cm"),
+            ({"size_input": "26.5"}, "nike-26-5cm"),
+            ({"size_input": "265", "scale": "MM"}, "nike-265mm"),
+            # Шкала уже в размере — не дублируется и главнее выбранной.
+            ({"size_input": "EU 43", "scale": "EU"}, "nike-eu-43"),
+            ({"size_input": "EU 43", "scale": "CM"}, "nike-eu-43"),
+            ({"size_input": "US W 7", "scale": "EU"}, "nike-us-w-7"),
+            # Голое «US» не перебивает выбранную женскую шкалу.
+            ({"size_input": "US 7", "scale": "US W"}, "nike-us-w-7"),
+            ({"size_input": "26,5 cm", "scale": "CM"}, "nike-26-5cm"),
+            ({"scale": "EU"}, "nike"),
+        )
+        for extra, expected in cases:
+            with self.subTest(meta=extra), tempfile.TemporaryDirectory() as tmp, \
+                    patch("poizon_parser.report.time.strftime", return_value="STAMP"):
+                out = write_report(MATCHES, {"brand": "Nike", **extra}, base_dir=tmp)
+                self.assertEqual(out.name, f"{expected}-STAMP")
+
+    def test_untrusted_scale_is_sanitized_in_folder_name(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch("poizon_parser.report.time.strftime", return_value="STAMP"):
+            out = write_report(
+                MATCHES,
+                {"brand": "Nike", "size_input": "42", "scale": "../../x y"},
+                base_dir=tmp,
+            )
+            self.assertEqual(out.parent.resolve(), Path(tmp).resolve())
+            self.assertEqual(out.name, "nike-x-y-42-STAMP")
 
 
 if __name__ == "__main__":

@@ -20,6 +20,18 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlsplit
 
+from .sizechart import (
+    CM,
+    EU,
+    MM,
+    RU,
+    UK,
+    US_MEN,
+    US_WOMEN,
+    normalize_scale,
+    resolve_query_scale,
+)
+
 ROOT = Path(__file__).resolve().parent.parent
 RESULT_DIR = ROOT / "result"
 
@@ -34,6 +46,9 @@ _SITE_URL = "https://www.thepoizon.ru"
 #: Результаты для отчёта присылает браузер, поэтому без этого списка сервер
 #: скачал бы что угодно — в том числе `file://` с локального диска.
 _IMAGE_HOSTS = ("thepoizon.ru", "poizon.com", "dewu.com", "dewucdn.com")
+#: Схемы, по которым фото скачиваются в отчёт. Только https: ответ по
+#: открытому http мог бы подменить кто угодно на пути запроса.
+_IMAGE_SCHEMES = ("https",)
 _MAX_IMAGE_BYTES = 5 * 1024 * 1024
 _DATA_IMAGE_RE = re.compile(
     r"^data:image/[a-z0-9.+-]+;base64,[a-z0-9+/]+=*$", re.IGNORECASE
@@ -88,11 +103,34 @@ def _is_web_url(url: str) -> bool:
 
 
 def _is_image_host(url: str) -> bool:
-    """Картинка лежит на CDN сайта — только такие можно скачивать."""
-    if not _is_web_url(url):
+    """Картинка лежит на CDN сайта и берётся по https — только такие качаем."""
+    try:
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+    except ValueError:  # кривой адрес (например, «http://[x»)
         return False
-    host = (urlsplit(url).hostname or "").lower()
+    if parts.scheme.lower() not in _IMAGE_SCHEMES:
+        return False
     return any(host == d or host.endswith("." + d) for d in _IMAGE_HOSTS)
+
+
+class _AllowlistRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Редирект — только на разрешённый CDN; список проверяется на каждом шаге.
+
+    Иначе стандартный обработчик urllib увёл бы запрос с CDN куда угодно
+    (localhost, адреса локальной сети), а ответ image/* попал бы в отчёт.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _is_image_host(newurl):
+            return None  # urllib превратит это в HTTPError — картинки не будет
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _open_image(request: urllib.request.Request, timeout: float):
+    """Открывает URL картинки; редиректы проходят через список разрешённых."""
+    opener = urllib.request.build_opener(_AllowlistRedirectHandler)
+    return opener.open(request, timeout=timeout)
 
 
 def _safe_link(url: Any) -> str:
@@ -132,7 +170,7 @@ def _fetch_data_uri(url: str) -> Optional[str]:
         return None
     try:
         req = urllib.request.Request(_thumb(url, 360), headers={"User-Agent": _UA})
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        with _open_image(req, timeout=20) as resp:
             raw = resp.read(_MAX_IMAGE_BYTES + 1)
             ctype = resp.headers.get_content_type()
     except Exception:  # noqa: BLE001 — картинка не критична для отчёта
@@ -364,11 +402,8 @@ def write_report(
         matches = _with_embedded_images(matches)
 
     brand_slug = slugify(meta.get("brand") or "poizon")
-    # Размер приходит из запроса — в имени папки оставляем только [0-9a-z-].
-    size_part = re.sub(r"[^0-9a-z]+", "-", str(meta.get("size_input") or "").lower())
-    size_part = size_part.strip("-")[:16]
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    name = "-".join(p for p in (brand_slug, f"{size_part}cm" if size_part else "", stamp) if p)
+    name = "-".join(p for p in (brand_slug, _size_slug(meta), stamp) if p)
 
     out_dir = _unique_dir(Path(base_dir), name)
     meta = dict(meta)
@@ -377,6 +412,47 @@ def write_report(
         build_report_html(matches, meta), encoding="utf-8"
     )
     return out_dir
+
+
+#: Шкалы, которые узнаём в начале строки размера («EU 43», «US W 7»).
+_KNOWN_SCALES = (EU, RU, UK, US_MEN, US_WOMEN, CM, MM)
+#: Шкала в начале строки размера: буквы до первой цифры.
+_SIZE_PREFIX_RE = re.compile(r"^\s*([^\W\d_][^\d]*?)\s*(?=\d)")
+
+
+def _slug_part(text: str, limit: int) -> str:
+    """Только [0-9a-z-]: значения приходят из запроса и идут в имя папки."""
+    return re.sub(r"[^0-9a-z]+", "-", str(text).lower()).strip("-")[:limit].strip("-")
+
+
+def _size_slug(meta: dict) -> str:
+    """Размер со шкалой для имени папки: «26-5cm», «eu-42», «us-m-9».
+
+    Длина стопы (и запрос без шкалы) — число с «cm», как раньше; остальные
+    шкалы — префиксом, чтобы EU 42 не выглядел как «42cm». Шкалу, уже
+    написанную в размере («EU 43»), не повторяем: она же и главнее
+    выбранной — то же правило, что у поиска (resolve_query_scale).
+    """
+    # Размер приходит из запроса: обрезаем до разумной длины, чтобы разбор
+    # префикса не тратил квадратичное время на мегабайты пробелов.
+    raw = str(meta.get("size_input") or "").strip()[:32]
+    written = None
+    match = _SIZE_PREFIX_RE.match(raw)
+    if match and normalize_scale(match.group(1)) in _KNOWN_SCALES:
+        written = match.group(1)
+        raw = raw[match.end():]
+    scale = resolve_query_scale(written, meta.get("scale"), default=CM)
+    unit = {CM: "cm", MM: "mm"}.get(scale)
+    number = _slug_part(raw, 16)
+    if unit:
+        # «26,5 cm» → «26-5cm», а не «26-5-cmcm».
+        number = re.sub(rf"-?{unit}$", "", number)
+    if not number:
+        return ""
+    if unit:
+        return f"{number}{unit}"
+    prefix = _slug_part(scale or "", 12)
+    return f"{prefix}-{number}" if prefix else number
 
 
 def _unique_dir(base_dir: Path, name: str) -> Path:

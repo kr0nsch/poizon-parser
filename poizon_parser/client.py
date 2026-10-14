@@ -18,9 +18,12 @@ import gzip
 import hashlib
 import http.cookiejar
 import json
+import os
 import random
 import re
+import stat
 import sys
+import tempfile
 import threading
 import time
 from datetime import datetime, timezone
@@ -42,6 +45,9 @@ _UA = (
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 
+#: Насколько mtime записи кэша может опережать time.time(), секунды.
+_CACHE_CLOCK_SKEW = 2.0
+
 _SEARCH_API = "/api/v1/h5/home-page/intl/landing/search/page"
 _DETAIL_API = "/api/v1/h5/goods-detail/intl/commodity/v2/get-index-spu-detail"
 
@@ -49,6 +55,37 @@ _C3VK_RE = re.compile(r"C3VK=([0-9a-zA-Z]+)")
 _NEXT_DATA_RE = re.compile(
     r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.DOTALL
 )
+
+
+def default_cache_dir() -> Path:
+    """Личная папка дискового кэша HTML текущего пользователя.
+
+    Windows — `%LOCALAPPDATA%\\poizon-parser\\cache`; POSIX —
+    `$XDG_CACHE_HOME/poizon-parser` или `~/.cache/poizon-parser`. Общая
+    временная папка не годится: на многопользовательской машине другой
+    пользователь мог бы заранее создать там каталог кэша и подложить в него
+    поддельные страницы или ссылки на чужие файлы. Папку функция не создаёт —
+    это делает PoizonClient.
+    """
+    if os.name == "nt":
+        local = os.environ.get("LOCALAPPDATA")
+        if local and os.path.isabs(local):
+            return Path(local) / "poizon-parser" / "cache"
+        home = os.path.expanduser("~")
+        if os.path.isabs(home):
+            return Path(home) / "AppData" / "Local" / "poizon-parser" / "cache"
+    else:
+        # По спецификации XDG относительный путь игнорируется.
+        xdg = os.environ.get("XDG_CACHE_HOME")
+        if xdg and os.path.isabs(xdg):
+            return Path(xdg) / "poizon-parser"
+        home = os.path.expanduser("~")
+        if os.path.isabs(home):
+            return Path(home) / ".cache" / "poizon-parser"
+    # Домашняя папка неизвестна (редкие окружения без HOME) — временная
+    # папка с именем пользователя; чужой каталог там отвергнет PoizonClient.
+    owner = os.getuid() if hasattr(os, "getuid") else os.environ.get("USERNAME", "")
+    return Path(tempfile.gettempdir()) / f"poizon-parser-cache-{owner}"
 
 
 class PoizonError(RuntimeError):
@@ -248,7 +285,17 @@ class PoizonClient:
         self.cache_dir = Path(cache_dir) if cache_dir else None
         self.cache_ttl = cache_ttl
         if self.cache_dir:
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                self.cache_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            except OSError as exc:
+                # Кэш — ускорение, а не условие работы: без папки идём в сеть.
+                self._log(f"кэш {self.cache_dir} недоступен ({exc}) — отключён")
+                self.cache_dir = None
+            if self.cache_dir and not self._cache_dir_is_private(self.cache_dir):
+                # Чужой или открытый всем на запись каталог: его содержимому
+                # верить нельзя — работаем без дискового кэша.
+                self._log(f"кэш {self.cache_dir} чужой или открыт всем на запись — отключён")
+                self.cache_dir = None
 
         self._jar = http.cookiejar.CookieJar()
         self._opener = urllib.request.build_opener(
@@ -630,6 +677,26 @@ class PoizonClient:
 
     # ----------------------------------------------------------------- кэш
 
+    @staticmethod
+    def _cache_dir_is_private(path: Path) -> bool:
+        """Каталог кэша наш и никто посторонний не может в него писать.
+
+        На POSIX проверяем владельца и бит записи «для всех» (групповой
+        оставляем: при umask 002 он обычен для личных каталогов). На Windows
+        личная папка в профиле пользователя защищена его правами.
+        """
+        if not hasattr(os, "getuid"):
+            return True
+        try:
+            info = os.stat(path)
+        except OSError:
+            return False
+        return (
+            stat.S_ISDIR(info.st_mode)
+            and info.st_uid == os.getuid()
+            and not info.st_mode & stat.S_IWOTH
+        )
+
     def _cache_path(self, url: str) -> Optional[Path]:
         if not self.cache_dir:
             return None
@@ -637,24 +704,58 @@ class PoizonClient:
         return self.cache_dir / f"{digest}.html"
 
     def _cache_read(self, url: str) -> Optional[str]:
+        """Страница из кэша, если запись свежая и это обычный файл.
+
+        lstat не идёт по ссылкам: подложенный symlink или каталог — не кэш.
+        Время изменения из будущего — признак подделки (такая запись иначе
+        не устарела бы никогда), её считаем просроченной.
+        """
         path = self._cache_path(url)
-        if not path or not path.exists():
-            return None
-        if self.cache_ttl >= 0 and time.time() - path.stat().st_mtime > self.cache_ttl:
+        if not path:
             return None
         try:
-            return path.read_text(encoding="utf-8")
+            info = os.lstat(path)
         except OSError:
+            return None
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        if self.cache_ttl >= 0:
+            age = time.time() - info.st_mtime
+            # Запись «из будущего» подложена или испорчена — но долю секунды
+            # прощаем: на Windows mtime свежего файла бывает чуть впереди
+            # time.time().
+            if age < -_CACHE_CLOCK_SKEW or age > self.cache_ttl:
+                return None
+        try:
+            return path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
             return None
 
     def _cache_write(self, url: str, html: str) -> None:
+        """Атомарно пишет страницу в кэш: временный файл + os.replace.
+
+        Запись прямо в итоговый путь пошла бы по подложенной символической
+        ссылке и перезаписала бы чужой файл; os.replace заменяет саму ссылку.
+        Заодно параллельный читатель не увидит недописанный файл.
+        """
         path = self._cache_path(url)
         if not path or len(html) < 2000:  # заглушки не кэшируем
             return
         try:
-            path.write_text(html, encoding="utf-8")
+            fd, tmp_name = tempfile.mkstemp(
+                dir=str(path.parent), prefix=f".{path.stem}-", suffix=".tmp"
+            )
         except OSError:
-            pass
+            return
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(html)
+            os.replace(tmp_name, path)
+        except OSError:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
 
     @staticmethod
     def _encode_url(url: str) -> str:

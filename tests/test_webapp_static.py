@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import http.client
 import json
+import ntpath
 import os
+import posixpath
+import re
 import tempfile
 import threading
 import unittest
@@ -13,6 +17,46 @@ from unittest.mock import patch
 
 from poizon_parser import webapp
 from poizon_parser.catalog import Brand
+
+#: Сетевой путь: два разделителя в начале, но не «\\?\» и не «\\.\» —
+#: так Windows помечает обычные локальные пути и устройства.
+_UNC_RE = re.compile(r"^[\\/]{2}(?![?.][\\/])")
+
+
+@contextlib.contextmanager
+def forbid_unc_access():
+    """Любое обращение ФС к сетевому пути — фиксируется и отклоняется.
+
+    Подменяет stat/lstat/readlink и функции ntpath, которые вызывает
+    Path.resolve() на Windows: если сервер хоть раз тронет `\\\\host\\...`,
+    путь окажется в списке (и до сети запрос не дойдёт).
+    """
+    touched: list = []
+
+    def guard(original):
+        def wrapper(path, *args, **kwargs):
+            if isinstance(path, (str, bytes, os.PathLike)):
+                text = os.fsdecode(os.fspath(path))
+                if _UNC_RE.match(text):
+                    touched.append(text)
+                    raise OSError(f"сетевой путь запрещён в тесте: {text}")
+            return original(path, *args, **kwargs)
+
+        return wrapper
+
+    targets = [(os, "stat"), (os, "lstat"), (os, "readlink")]
+    targets += [
+        (module, name)
+        for module in (ntpath, posixpath)
+        for name in ("_getfinalpathname", "_nt_readlink", "_getfinalpathname_nonstrict")
+        if hasattr(module, name)
+    ]
+    with contextlib.ExitStack() as stack:
+        for module, name in targets:
+            stack.enter_context(
+                patch.object(module, name, guard(getattr(module, name)))
+            )
+        yield touched
 
 
 class TestFrontendStaticFiles(unittest.TestCase):
@@ -359,6 +403,87 @@ class TestFrontendStaticFiles(unittest.TestCase):
 
         self.assertEqual(status, 403)
         self.assertNotIn(b"do not expose", body)
+
+    def test_unc_paths_are_rejected_without_touching_them(self) -> None:
+        # Регрессия: на Windows resolve() открывал \\host\share до проверки
+        # «внутри папки» — сервер подключался по SMB к хосту из URL и
+        # предъявлял ему NTLM-учётку. Путь проверяется до обращения к диску.
+        result_dir = self.root / "result"
+        result_dir.mkdir()
+        paths = (
+            "/result/%5C%5Chost%5Cs%5Cx",
+            "/result///host/s/x",
+            "/result/%2F%2Fhost%2Fs%2Fx",
+            "/result/report%5C..%5C..%5Csecret",
+            "/result/C:%5Csecret.html",
+            "/assets/%5C%5Chost%5Cs%5Cx",
+            "/assets///host/s/x",
+            "/assets/%2F%2Fhost%2Fs%2Fx",
+        )
+        with patch.object(webapp, "RESULT_DIR", result_dir):
+            for path in paths:
+                with self.subTest(path=path), forbid_unc_access() as touched:
+                    status, _, body = self.request("GET", path)
+                    self.assertEqual(status, 403)
+                    self.assertIn("недопустимый путь", json.loads(body)["error"])
+                    self.assertEqual(touched, [])
+
+    def test_nul_byte_in_path_is_rejected_not_500(self) -> None:
+        # Регрессия: resolve() стоял вне try, и NUL в пути отчёта давал 500.
+        result_dir = self.root / "result"
+        result_dir.mkdir()
+        with patch.object(webapp, "RESULT_DIR", result_dir), \
+                patch("traceback.print_exc"):
+            for path in (
+                "/result/report%00/index.html",
+                "/result/index.html%00.txt",
+                "/assets/app-a1b2c3.js%00",
+            ):
+                with self.subTest(path=path):
+                    status, _, body = self.request("GET", path)
+                    self.assertEqual(status, 403)
+                    self.assertIn("недопустимый путь", json.loads(body)["error"])
+
+    def test_empty_and_dot_segments_are_rejected(self) -> None:
+        result_dir = self.root / "result"
+        (result_dir / "report-1").mkdir(parents=True)
+        (result_dir / "report-1" / "index.html").write_text("ok", encoding="utf-8")
+        with patch.object(webapp, "RESULT_DIR", result_dir):
+            for path in (
+                "/result/report-1/./index.html",
+                "/result/report-1//index.html",
+                "/result/%2E%2E/secret",
+                "/result/",
+            ):
+                with self.subTest(path=path):
+                    self.assertEqual(self.request("GET", path)[0], 403)
+            # Обычный путь по-прежнему работает, отсутствующий — 404.
+            self.assertEqual(self.request("GET", "/result/report-1/index.html")[0], 200)
+            self.assertEqual(self.request("GET", "/result/report-1/nope.html")[0], 404)
+
+    def test_search_rejects_new_job_over_active_limit(self) -> None:
+        # Поток задачи в тесте не запускается ни при каком исходе: без сети.
+        run = patch.object(webapp.JobManager, "_run")
+        run.start()
+        self.addCleanup(run.stop)
+        body = {"brand": "nike", "size": "26.5", "scale": "CM"}
+        with patch.object(webapp, "MAX_ACTIVE_JOBS", 2):
+            self.add_job(status="running")
+            self.add_job(status="captcha")
+            self.add_job(status="done")
+            status, payload = self.post_json("/api/search", body)
+            self.assertEqual(status, 429)
+            self.assertIn("уже идут поиски", payload["error"])
+            self.assertEqual(self.server.jobs.count()["total"], 3)
+
+            # Завершённые задачи потолок не занимают.
+            next(
+                job for job in self.server.jobs._jobs.values()
+                if job["status"] == "captcha"
+            )["status"] = "cancelled"
+            status, payload = self.post_json("/api/search", body)
+            self.assertEqual(status, 200)
+            self.assertIn("id", payload)
 
     def test_missing_dist_falls_back_to_legacy_page(self) -> None:
         with patch.object(webapp, "FRONTEND_DIST", self.root / "missing-dist"):

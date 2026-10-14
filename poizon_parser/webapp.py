@@ -18,22 +18,32 @@ import mimetypes
 import os
 import re
 import sys
-import tempfile
 import threading
 import time
 import traceback
 import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Optional
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .catalog import Catalog
-from .client import Cancelled, ChallengeRequired, PoizonClient, PoizonError
+from .client import (
+    Cancelled,
+    ChallengeRequired,
+    PoizonClient,
+    PoizonError,
+    default_cache_dir,
+)
 from .finder import SizeFinder
 from .report import RESULT_DIR, write_report
-from .sizechart import EU, resolve_official_chart, resolve_query_scale
+from .sizechart import (
+    EU,
+    convert_to_eu,
+    resolve_official_chart,
+    resolve_query_scale,
+)
 from .sizes import parse_size_query
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -41,7 +51,8 @@ WEB_DIR = ROOT / "web"
 FRONTEND_DIST = ROOT / "frontend" / "dist"
 #: Личные избранные каждого пользователя: data/picks/<uid>.json.
 PICKS_DIR = ROOT / "data" / "picks"
-CACHE_DIR = Path(tempfile.gettempdir()) / "poizon-parser-cache"
+#: Кэш HTML — в личной папке пользователя (та же, что у CLI).
+CACHE_DIR = default_cache_dir()
 #: Имя cookie с анонимным идентификатором пользователя.
 UID_COOKIE = "poizon_uid"
 #: Как выглядит выданный сервером uid (uuid4().hex). Всё прочее — как без
@@ -74,6 +85,13 @@ PACES = {
 BRANDS_TTL = 6 * 3600
 #: Сколько завершённых задач держим в памяти (чтобы не текла память).
 JOB_RETENTION = 20
+#: Сколько поисков (идущих или на паузе) может работать одновременно. У каждой
+#: задачи свой темп запросов, так что без потолка нагрузка на сайт росла бы
+#: с числом задач.
+MAX_ACTIVE_JOBS = 4
+#: Через сколько секунд без опросов задача на паузе считается брошенной
+#: (вкладку закрыли, пока висела проверка) и останавливается сама.
+ABANDON_AFTER = 30 * 60
 #: Разумные границы длины стопы, см — вне них ввод считается ошибкой.
 FOOT_MIN_CM = 15.0
 FOOT_MAX_CM = 40.0
@@ -101,6 +119,63 @@ class ReportRequestError(ValueError):
     def __init__(self, status: int, message: str) -> None:
         super().__init__(message)
         self.status = status
+
+
+class TooManyJobs(RuntimeError):
+    """Достигнут потолок одновременных поисков (MAX_ACTIVE_JOBS)."""
+
+
+#: Символы, которых не бывает в сегменте пути URL к отчёту или ассету:
+#: разделитель Windows, «:» (диск, поток NTFS) и NUL.
+_BAD_SEGMENT_CHARS = ("\\", ":", "\x00")
+
+
+def safe_child_path(root: Path, relative: str) -> Optional[Path]:
+    """Путь внутри root по части URL или None, если путь недопустим.
+
+    Проверка чисто лексическая и идёт до любого обращения к диску. Иначе
+    `\\\\host\\share\\x` (или `//host/share/x`) заменял бы root целиком, и уже
+    resolve() открыл бы UNC-путь: Windows подключилась бы по SMB к хосту,
+    названному в запросе, и предъявила бы ему NTLM-учётку пользователя,
+    запустившего сервер. Пустые сегменты (в том числе ведущий «/»), «.»,
+    «..», обратный слеш, «:» и NUL отклоняются.
+    """
+    segments = relative.split("/")
+    for segment in segments:
+        if segment in ("", ".", "..") or any(
+            char in segment for char in _BAD_SEGMENT_CHARS
+        ):
+            return None
+    candidate = root.joinpath(*segments)
+    root_text = os.path.normpath(str(root))
+    candidate_text = os.path.normpath(str(candidate))
+    if PureWindowsPath(candidate_text).drive != PureWindowsPath(root_text).drive:
+        return None
+    try:
+        if os.path.commonpath([root_text, candidate_text]) != root_text:
+            return None
+    except ValueError:
+        return None
+    return candidate
+
+
+def resolve_inside(root: Path, relative: str) -> Optional[Path]:
+    """Реальный путь файла внутри root или None (тогда — ответ 403).
+
+    Сначала лексическая проверка (safe_child_path), и только потом resolve():
+    он ловит символические ссылки, ведущие наружу. Ошибки ОС и ValueError
+    resolve() — тоже «недопустимый путь», а не 500.
+    """
+    try:
+        base = root.resolve()
+        candidate = safe_child_path(base, relative)
+        if candidate is None:
+            return None
+        target = candidate.resolve()
+        target.relative_to(base)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return target
 
 
 def validate_search(body: dict) -> Optional[str]:
@@ -310,6 +385,13 @@ class PickStore:
 # ---------------------------------------------------------------------- jobs
 
 
+def _minutes(seconds: float) -> str:
+    """30 * 60 → «30 мин»; меньше минуты — в секундах."""
+    if seconds >= 60:
+        return f"{seconds / 60:g} мин"
+    return f"{seconds:g} с"
+
+
 class JobManager:
     """Фоновые поисковые задачи."""
 
@@ -318,8 +400,18 @@ class JobManager:
         self._lock = threading.Lock()
 
     def create(self, params: dict) -> dict:
+        """Запускает задачу; TooManyJobs — если активных уже MAX_ACTIVE_JOBS."""
         job = self._new_job(params)
         with self._lock:
+            self._abandon_unpolled()
+            active = self._active_count()
+            if active >= MAX_ACTIVE_JOBS:
+                raise TooManyJobs(
+                    f"сейчас уже идут поиски ({active} из {MAX_ACTIVE_JOBS} "
+                    "возможных одновременно) — дождитесь окончания одного из "
+                    "них. Поиск, страницу которого закрыли, освобождает место "
+                    f"сам через {_minutes(ABANDON_AFTER)}"
+                )
             self._jobs[job["id"]] = job
             self._evict_old()
         thread = threading.Thread(target=self._run, args=(job,), daemon=True)
@@ -364,6 +456,10 @@ class JobManager:
         job["_resume_gen"] = 0
         # Счётчики обновляются из воркеров — нужен свой замок.
         job["_counter"] = threading.Lock()
+        # Когда задачу последний раз опрашивали: без опросов дольше
+        # ABANDON_AFTER задача брошена (_wait_for_captcha, _abandon_unpolled).
+        job["_last_poll"] = time.time()
+        job["_abandoned"] = False
         return job
 
     def _evict_old(self) -> None:
@@ -382,14 +478,36 @@ class JobManager:
         for jid, _ in finished[: len(finished) - JOB_RETENTION]:
             self._jobs.pop(jid, None)
 
+    def _active_count(self) -> int:
+        """Сколько задач идёт или ждёт на паузе. Вызывать под self._lock.
+
+        Брошенные (уже отменяемые) задачи место не занимают: их потоки
+        остановятся сами за секунду-другую.
+        """
+        return sum(
+            1 for j in self._jobs.values()
+            if j["status"] in ("running", "captcha") and not j.get("_abandoned")
+        )
+
+    def _abandon_unpolled(self) -> None:
+        """Отменяет активные задачи, которые ABANDON_AFTER никто не опрашивал.
+
+        Интерфейс опрашивает задачу и в фоновой вкладке, поэтому тишина
+        означает, что страницу закрыли или перезагрузили, — продолжать поиск
+        не для кого. Вызывать под self._lock.
+        """
+        now = time.time()
+        for job in self._jobs.values():
+            if job["status"] not in ("running", "captcha") or job.get("_abandoned"):
+                continue
+            if now - job.get("_last_poll", now) > ABANDON_AFTER:
+                with job["_cond"]:
+                    self._abandon(job)
+
     def count(self) -> dict:
         """Сводка по задачам — для health-эндпоинта."""
         with self._lock:
-            active = sum(
-                1 for j in self._jobs.values()
-                if j["status"] in ("running", "captcha")
-            )
-            return {"total": len(self._jobs), "active": active}
+            return {"total": len(self._jobs), "active": self._active_count()}
 
     def get(self, job_id: str) -> Optional[dict]:
         with self._lock:
@@ -399,6 +517,8 @@ class JobManager:
         job = self.get(job_id)
         if job is None:
             return None
+        # Опрос — знак, что за задачей кто-то следит (см. _wait_for_captcha).
+        job["_last_poll"] = time.time()
         # Под тем же замком, что и _finish: финальный снимок не бывает
         # «наполовину завершённым».
         # Списки копируем: воркеры дописывают их, пока ответ сериализуется.
@@ -524,6 +644,11 @@ class JobManager:
 
         Безопасен для нескольких воркеров: каждый ждёт следующего поколения
         resume. Возвращает True (повторить запрос) или False (прекратить).
+
+        Ждёт не вечно: если задачу ABANDON_AFTER секунд никто не опрашивал
+        (вкладку закрыли, пока висела проверка), продолжить её уже некому —
+        задача отменяет себя сама, освобождает потоки и попадает под
+        обычную очистку завершённых.
         """
         with job["_cond"]:
             if (
@@ -549,9 +674,27 @@ class JobManager:
                 )
             # Пауза снимается только в resume(); ждём смены поколения.
             seen = job["_resume_gen"]
+            since = time.time()
             while job["_resume_gen"] == seen and not job["cancel"]:
-                job["_cond"].wait(timeout=1.0)
+                # Отсчёт — от последнего опроса, но не раньше начала паузы.
+                deadline = max(job.get("_last_poll", since), since) + ABANDON_AFTER
+                left = deadline - time.time()
+                if left <= 0:
+                    self._abandon(job)
+                    break
+                job["_cond"].wait(timeout=min(1.0, left))
         return not job["cancel"]
+
+    def _abandon(self, job: dict) -> None:
+        """Останавливает брошенную на паузе задачу. Вызывать под job["_cond"]."""
+        job["_abandoned"] = True
+        job["cancel"] = True
+        job["_cond"].notify_all()  # будим остальных воркеров на барьере
+        self._log(
+            job,
+            f"задача брошена: её не опрашивали {_minutes(ABANDON_AFTER)} — "
+            "останавливаю",
+        )
 
     # ------------------------------------------------------------- runner
 
@@ -598,6 +741,12 @@ class JobManager:
         except Exception as exc:  # noqa: BLE001 — фон, наружу не выбросить
             outcome = ("error", "внутренняя ошибка", f"внутренняя ошибка: {exc!r}")
         finally:
+            if outcome[0] == "cancelled" and job.get("_abandoned"):
+                outcome = (
+                    "cancelled",
+                    f"задача брошена: её не опрашивали {_minutes(ABANDON_AFTER)}",
+                    "",
+                )
             self._finish(job, *outcome)
 
     @staticmethod
@@ -659,6 +808,20 @@ class JobManager:
         # То же правило, что у CLI и SizeFinder: голое «US» в размере не
         # перебивает выбранную в форме «US W».
         scale = resolve_query_scale(parsed_scale, params.get("scale"), default=EU)
+        gender = "women" if str(params.get("gender")) == "women" else "men"
+
+        # Размер вне официальной таблицы бренда не подойдёт ни одному товару:
+        # вердикт зависит только от бренда, шкалы и пола. Говорим об этом сразу,
+        # а не после загрузки всех карточек с пустым итогом.
+        conversion = convert_to_eu(
+            scale, size_value, None, brand=brand.name, gender=gender
+        )
+        if not conversion.supported:
+            raise ValueError(
+                f"{conversion.note} — поиск по нему ничего не найдёт. "
+                "Проверьте число и шкалу: длину стопы указывайте в "
+                "сантиметрах, размер с ярлыка — в EU, US или UK"
+            )
 
         max_price = params.get("maxPrice")
         min_price = params.get("minPrice")
@@ -724,7 +887,7 @@ class JobManager:
             workers=workers,
             should_stop=lambda: bool(job["cancel"]),
             on_match=collect,
-            gender="women" if str(params.get("gender")) == "women" else "men",
+            gender=gender,
         )
         if job["cancel"]:
             raise Cancelled()
@@ -942,12 +1105,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _serve_asset(self, request_path: str) -> None:
         """Отдаёт только файлы внутри Vite assets, не допуская traversal."""
-        asset_root = (FRONTEND_DIST / "assets").resolve()
-        relative = unquote(request_path[len("/assets/"):])
-        try:
-            target = (asset_root / relative).resolve()
-            target.relative_to(asset_root)
-        except (OSError, RuntimeError, ValueError):
+        target = resolve_inside(
+            FRONTEND_DIST / "assets", unquote(request_path[len("/assets/"):])
+        )
+        if target is None:
             self._json({"error": "недопустимый путь"}, 403)
             return
         self._send_file(
@@ -997,17 +1158,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def _serve_report(self, path: str) -> None:
         """Отдаёт сгенерированный отчёт из result/ (с защитой от выхода из папки)."""
-        rel = unquote(path[len("/result/"):])
-        target = (RESULT_DIR / rel).resolve()
-        try:
-            target.relative_to(RESULT_DIR.resolve())
-        except ValueError:
+        target = resolve_inside(RESULT_DIR, unquote(path[len("/result/"):]))
+        if target is None:
             self._json({"error": "недопустимый путь"}, 403)
             return
-        if not target.is_file():
+        try:
+            body = target.read_bytes() if target.is_file() else None
+        except OSError:
+            body = None
+        if body is None:
             self._json({"error": "отчёт не найден"}, 404)
             return
-        body = target.read_bytes()
         ctype = "text/html; charset=utf-8" if target.suffix == ".html" else "application/octet-stream"
         self.send_response(200)
         self.send_header("Content-Type", ctype)
@@ -1055,19 +1216,23 @@ class Handler(BaseHTTPRequestHandler):
                 if problem:
                     self._json({"error": problem}, 400)
                     return
-                job = self.server.jobs.create(
-                    {
-                        "brand": body.get("brand"),
-                        "size": body.get("size"),
-                        "scale": body.get("scale") or "EU",
-                        "depth": body.get("depth"),
-                        "maxPrice": body.get("maxPrice"),
-                        "minPrice": body.get("minPrice"),
-                        "pace": body.get("pace") or "normal",
-                        "gender": body.get("gender") or "men",
-                        "kids": bool(body.get("kids")),
-                    }
-                )
+                try:
+                    job = self.server.jobs.create(
+                        {
+                            "brand": body.get("brand"),
+                            "size": body.get("size"),
+                            "scale": body.get("scale") or "EU",
+                            "depth": body.get("depth"),
+                            "maxPrice": body.get("maxPrice"),
+                            "minPrice": body.get("minPrice"),
+                            "pace": body.get("pace") or "normal",
+                            "gender": body.get("gender") or "men",
+                            "kids": bool(body.get("kids")),
+                        }
+                    )
+                except TooManyJobs as exc:
+                    self._json({"error": str(exc)}, 429)
+                    return
                 self._json({"id": job["id"]})
             elif path.startswith("/api/search/") and path.endswith(
                 ("/cancel", "/continue", "/pause")
