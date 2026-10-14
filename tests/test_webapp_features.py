@@ -382,6 +382,56 @@ class TestManualPause(unittest.TestCase):
         self.assertFalse(self.manager.request_pause(self.job["id"]))
 
 
+class TestAbandonedRunningJob(unittest.TestCase):
+    """Идущая задача без опросов останавливается сама, не дожидаясь
+    следующего запуска поиска: страницу закрыли — продолжать не для кого."""
+
+    def test_stop_requested_abandons_unpolled_job(self):
+        manager = JobManager()
+        job = add_job(
+            manager, _last_poll=time.time() - webapp.ABANDON_AFTER - 1
+        )
+        self.assertTrue(manager._stop_requested(job))
+        self.assertTrue(job["cancel"])
+        self.assertTrue(job["_abandoned"])
+        self.assertIn("брошена", job["log"][-1])
+
+    def test_polled_job_keeps_running(self):
+        manager = JobManager()
+        job = add_job(manager)
+        self.assertFalse(manager._stop_requested(job))
+        self.assertFalse(job["cancel"])
+
+    def test_scan_stops_and_job_ends_as_abandoned(self):
+        manager = JobManager()
+        params = {"brand": "nike", "size": "26.5", "scale": "CM"}
+        job = add_job(manager, params=params)
+        seen_stop = []
+
+        def scan(*_args, should_stop, **_kwargs):
+            # Опросов не было дольше ABANDON_AFTER — обход должен встать.
+            job["_last_poll"] = time.time() - webapp.ABANDON_AFTER - 1
+            seen_stop.append(should_stop())
+            return []
+
+        with patch.object(webapp, "PoizonClient") as client_class, \
+                patch.object(webapp, "Catalog") as catalog_class, \
+                patch.object(webapp, "SizeFinder") as finder_class:
+            client_class.return_value.stats = {}
+            catalog = catalog_class.return_value
+            catalog.find_brand.return_value = Brand(
+                brand_id=1, name="Nike", url="/brand/nike"
+            )
+            catalog.brand_items.return_value = []
+            finder_class.return_value.scan_products.side_effect = scan
+            manager._run(job)
+
+        self.assertEqual(seen_stop, [True])
+        snap = manager.snapshot(job["id"])
+        self.assertEqual(snap["status"], "cancelled")
+        self.assertIn("задача брошена", snap["stop_reason"])
+
+
 class TestAbandonedPause(unittest.TestCase):
     """Пауза без опросов не держит задачу вечно (вкладку закрыли на капче)."""
 

@@ -1155,8 +1155,10 @@ def cmd_brandchart(args) -> int:
 
     chart = resolve_brand(args.brand)
     if chart is None:
-        print(f"Для «{args.brand}» официальной таблицы нет; "
-              "будет использована общая атлетическая сетка.", file=sys.stderr)
+        print(f"Для «{args.brand}» официальной таблицы нет; длина стопы "
+              "переводится по общей сетке стопы, US и UK — по таблице товара "
+              "или стандартной атлетической сетке (с пометкой «≈»).",
+              file=sys.stderr)
         return 1
 
     rows = chart.rows(args.gender)

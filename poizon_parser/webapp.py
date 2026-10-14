@@ -685,6 +685,24 @@ class JobManager:
                 job["_cond"].wait(timeout=min(1.0, left))
         return not job["cancel"]
 
+    def _stop_requested(self, job: dict) -> bool:
+        """Пора останавливаться: «Стоп» или задачу бросили.
+
+        Интерфейс опрашивает задачу и из фоновой вкладки, поэтому
+        ABANDON_AFTER без опросов значит, что страницу закрыли или
+        перезагрузили: продолжать поиск не для кого. Так и идущая (не только
+        стоящая на паузе) задача освобождает потоки и место под потолком
+        MAX_ACTIVE_JOBS, не дожидаясь следующего запуска поиска.
+        """
+        if job["cancel"]:
+            return True
+        if time.time() - job.get("_last_poll", time.time()) <= ABANDON_AFTER:
+            return False
+        with job["_cond"]:
+            if not job["cancel"]:
+                self._abandon(job)
+        return True
+
     def _abandon(self, job: dict) -> None:
         """Останавливает брошенную на паузе задачу. Вызывать под job["_cond"]."""
         job["_abandoned"] = True
@@ -787,7 +805,7 @@ class JobManager:
         if demo and demo.isdigit():
             client.force_challenge_after = int(demo)
         # Отмена прерывает и сбор каталога, и долгие паузы после 429.
-        client.should_stop = lambda: bool(job["cancel"])
+        client.should_stop = lambda: self._stop_requested(job)
         # Ручная пауза: пользователь может остановиться, пройти проверку и продолжить.
         client.should_pause = lambda: job.get("pause_requested")
         catalog = Catalog(client)
@@ -834,7 +852,7 @@ class JobManager:
         for item in catalog.brand_items(
             brand, max_items=depth or None, include_kids=include_kids
         ):
-            if job["cancel"]:
+            if self._stop_requested(job):
                 raise Cancelled()
             items.append(item)
             job["collected"] = len(items)
@@ -885,7 +903,7 @@ class JobManager:
             max_price=float(max_price) if max_price else None,
             min_price=float(min_price) if min_price else None,
             workers=workers,
-            should_stop=lambda: bool(job["cancel"]),
+            should_stop=lambda: self._stop_requested(job),
             on_match=collect,
             gender=gender,
         )
