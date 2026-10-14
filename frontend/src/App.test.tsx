@@ -220,6 +220,8 @@ describe('App', () => {
     await waitFor(() =>
       expect(screen.queryByText(/Подсказки брендов не загрузились/)).toBeNull(),
     )
+    // Подсказка ушла вместе с «Повторить» — фокус на поле бренда, не на <body>.
+    await waitFor(() => expect(screen.getByLabelText(/^Бренд/)).toHaveFocus())
   })
 
   it('unblocks the search when the server forgets the job', async () => {
@@ -557,6 +559,40 @@ describe('App', () => {
     await user.click(screen.getAllByRole('button', { name: /Поиск/ })[0]!)
     await screen.findByRole('button', { name: SAVE_BUTTON })
     expect(screen.queryByText(/Не удалось добавить в итоги/)).toBeNull()
+  })
+
+  it('keeps focus on the page when error banners are dismissed', async () => {
+    installServer({
+      'POST /api/search': () => json({ id: 'job-1' }),
+      'GET /api/search/job-1': () =>
+        json(snapshot({ matches: [match()], found: 1 })),
+      'POST /api/picks': () => json({ error: 'диск переполнен' }, 500),
+      'POST /api/report': () => json({ error: 'нет места' }, 500),
+    })
+    const { user } = renderApp()
+
+    await startSearch(user)
+    await user.click(await screen.findByRole('button', { name: SAVE_BUTTON }))
+    await screen.findByText(/Не удалось добавить в итоги/)
+    await user.click(screen.getByRole('button', { name: /HTML-отчёт/ }))
+    await screen.findByText(/Не удалось собрать отчёт/)
+
+    // Скрытое сообщение уносит свою кнопку: фокус — на «Скрыть» соседнего.
+    const [first, second] = screen.getAllByRole('button', {
+      name: 'Скрыть сообщение',
+    })
+    await user.click(first!)
+    expect(screen.queryByText(/Не удалось добавить в итоги/)).toBeNull()
+    await waitFor(() => expect(second).toHaveFocus())
+
+    // Последнее сообщение — фокус на заголовке результатов.
+    await user.click(second!)
+    expect(screen.queryByText(/Не удалось собрать отчёт/)).toBeNull()
+    await waitFor(() =>
+      expect(
+        screen.getByRole('heading', { name: /Найдено моделей/ }),
+      ).toHaveFocus(),
+    )
   })
 
   it('keeps result filters across tab switches', async () => {

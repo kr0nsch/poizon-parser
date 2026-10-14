@@ -146,6 +146,36 @@ describe('PicksView', () => {
     )
   })
 
+  it('keeps focus on the picks after a successful retry', async () => {
+    const props = {
+      loading: false,
+      clearing: false,
+      removingIds: new Set<string>(),
+      onRetry: vi.fn(),
+      onRemove: vi.fn(),
+      onClear: vi.fn(),
+    }
+    const { container, rerender } = render(
+      <PicksView {...props} picks={[]} error="Сервер недоступен." />,
+    )
+    screen.getByRole('button', { name: /Повторить/ }).focus()
+
+    // Итоги загрузились: экран ошибки исчез вместе с «Повторить».
+    rerender(<PicksView {...props} picks={[PICK]} />)
+    await waitFor(() =>
+      expect(container.querySelector('#picks-title')).toHaveFocus(),
+    )
+
+    // То же для «Повторить» в сообщении над сохранёнными итогами.
+    rerender(<PicksView {...props} picks={[PICK]} error="Сервер недоступен." />)
+    screen.getByRole('button', { name: /Повторить/ }).focus()
+    rerender(<PicksView {...props} picks={[PICK]} />)
+    expect(screen.queryByRole('button', { name: /Повторить/ })).toBeNull()
+    await waitFor(() =>
+      expect(container.querySelector('#picks-title')).toHaveFocus(),
+    )
+  })
+
   it('tracks several removals at once', () => {
     renderView({
       picks: [PICK, { ...PICK, id: 'pick-2' }],

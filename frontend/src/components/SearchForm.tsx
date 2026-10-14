@@ -1,6 +1,6 @@
 import { AlertTriangle, Ruler, Search, Square } from 'lucide-react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
-import { useMemo, useRef, useState, type FormEvent } from 'react'
+import { useMemo, useRef, useState, type FormEvent, type Ref } from 'react'
 
 import type { Brand, ConversionResponse } from '../api'
 import { formatNumber, formatSize } from '../lib/format'
@@ -19,6 +19,8 @@ import {
 
 interface SearchFormProps {
   active: boolean
+  /** Поле бренда — запасная цель фокуса для подсказок под формой. */
+  brandInputRef?: Ref<HTMLInputElement>
   brands: Brand[]
   brandsLoading: boolean
   conversion?: ConversionResponse
@@ -33,6 +35,7 @@ interface SearchFormProps {
 
 export function SearchForm({
   active,
+  brandInputRef,
   brands,
   brandsLoading,
   conversion,
@@ -121,6 +124,7 @@ export function SearchForm({
       <form className="search-form ui-card__content" onSubmit={submit}>
         <div className="search-form__primary">
           <Field
+            ref={brandInputRef}
             label="Бренд"
             list="brand-options"
             required
@@ -200,7 +204,9 @@ export function SearchForm({
             <Select
               id="depth"
               value={form.depth}
-              onChange={(event) => update('depth', event.target.value)}
+              onChange={(event) =>
+                update('depth', event.target.value as StoredSearchForm['depth'])
+              }
             >
               <option value="40">Быстро · 40 моделей</option>
               <option value="120">Глубже · 120 моделей</option>

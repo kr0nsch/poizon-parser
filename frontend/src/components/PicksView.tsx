@@ -58,6 +58,11 @@ export function PicksView({
   const rescueClearFocus = useFocusRescue<HTMLButtonElement>(
     () => emptyRef.current,
   )
+  // Удачный повтор убирает сообщение об ошибке вместе с «Повторить»: фокус
+  // уходит на загруженные итоги (счётчик) или на пустое состояние.
+  const rescueRetryFocus = useFocusRescue<HTMLButtonElement>(
+    () => emptyRef.current ?? titleRef.current,
+  )
 
   function exportJson() {
     downloadText(
@@ -116,6 +121,7 @@ export function PicksView({
 
   const retryButton = (
     <Button
+      ref={rescueRetryFocus}
       size="sm"
       variant="secondary"
       loading={retrying}

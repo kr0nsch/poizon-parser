@@ -10,18 +10,20 @@
     <meta name="theme-color" content="#f5f5f2" />
     <title>POIZON — обувь по вашему размеру</title>
     <script>
+      // Правило getInitialTheme из src/lib/storage.ts: чужое значение или
+      // недоступное хранилище — тема системы.
       ;(() => {
+        let saved = null
         try {
-          const saved = localStorage.getItem('poizon-theme')
-          const dark =
-            saved === 'dark' ||
-            (!saved &&
-              window.matchMedia('(prefers-color-scheme: dark)').matches)
-          document.documentElement.classList.toggle('dark', dark)
-          document.documentElement.dataset.theme = dark ? 'dark' : 'light'
-        } catch {
-          document.documentElement.dataset.theme = 'light'
-        }
+          saved = localStorage.getItem('poizon-theme')
+        } catch {}
+        const dark =
+          saved === 'dark' ||
+          (saved !== 'light' &&
+            typeof window.matchMedia === 'function' &&
+            window.matchMedia('(prefers-color-scheme: dark)').matches)
+        document.documentElement.classList.toggle('dark', dark)
+        document.documentElement.dataset.theme = dark ? 'dark' : 'light'
       })()
     </script>
   </head>

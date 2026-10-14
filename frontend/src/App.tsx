@@ -42,6 +42,7 @@ import {
   saveSearchForm,
   type StoredSearchForm,
 } from './lib/storage'
+import { useFocusRescue, useListFocusRescue } from './lib/utils'
 
 const PICKS_QUERY_KEY = ['picks'] as const
 
@@ -156,13 +157,33 @@ async function requestReport({
   return createReport({ ...meta, matches })
 }
 
-function Banners({ banners }: { banners: Banner[] }) {
+/** Первый из элементов по селекторам, который сейчас есть на странице. */
+function firstPresent(...selectors: string[]): HTMLElement | null {
+  for (const selector of selectors) {
+    const element = document.querySelector<HTMLElement>(selector)
+    if (element) return element
+  }
+  return null
+}
+
+function Banners({
+  banners,
+  focusFallback,
+}: {
+  banners: Banner[]
+  /** Куда перенести фокус, когда скрыто последнее сообщение. */
+  focusFallback: () => HTMLElement | null | undefined
+}) {
+  // Скрытое сообщение уносит с собой кнопку «Скрыть»: фокус переходит на
+  // соседнее сообщение, а после последнего — на focusFallback().
+  const rescueFocus = useListFocusRescue<HTMLDivElement>(focusFallback)
   if (banners.length === 0) return null
   return (
     <div style={{ display: 'grid', gap: '0.4rem', marginTop: '0.75rem' }}>
       {banners.map((banner) => (
         <div
           key={banner.id}
+          ref={rescueFocus}
           className="ui-field__error"
           role="alert"
           style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}
@@ -211,6 +232,17 @@ export function App() {
   }))
   // Текущая задача — для ответов, пришедших уже после смены поиска.
   const jobIdRef = useRef(jobId)
+  // Удачный повтор убирает подсказку о брендах вместе с «Повторить»: фокус
+  // уходит на поле бренда, где подсказки теперь и появятся.
+  const brandInputRef = useRef<HTMLInputElement>(null)
+  const rescueBrandsRetryFocus = useFocusRescue<HTMLButtonElement>(
+    () => brandInputRef.current,
+  )
+  // После последнего скрытого сообщения — на ближайший раздел экрана.
+  const searchBannersFallback = () =>
+    firstPresent('#results-title', '.status-summary') ?? brandInputRef.current
+  const picksBannersFallback = () =>
+    firstPresent('#picks-title', '.empty-state[tabindex]')
 
   useEffect(() => {
     jobIdRef.current = jobId
@@ -492,6 +524,7 @@ export function App() {
           <>
             <SearchForm
               active={searchActive}
+              brandInputRef={brandInputRef}
               brands={brandsQuery.data?.brands ?? []}
               brandsLoading={brandsQuery.isPending}
               conversion={conversionQuery.data}
@@ -517,6 +550,7 @@ export function App() {
                 Подсказки брендов не загрузились — бренд можно ввести вручную.{' '}
                 {errorMessage(brandsQuery.error)}{' '}
                 <button
+                  ref={rescueBrandsRetryFocus}
                   className="inline-link"
                   type="button"
                   onClick={() => void brandsQuery.refetch()}
@@ -559,7 +593,10 @@ export function App() {
               </div>
             ) : null}
 
-            <Banners banners={searchBanners} />
+            <Banners
+              banners={searchBanners}
+              focusFallback={searchBannersFallback}
+            />
 
             {job?.matches.length ? (
               <ResultsView
@@ -609,7 +646,10 @@ export function App() {
           </>
         ) : (
           <>
-            <Banners banners={picksBanners} />
+            <Banners
+              banners={picksBanners}
+              focusFallback={picksBannersFallback}
+            />
             <PicksView
               picks={picks}
               loading={picksQuery.isPending}

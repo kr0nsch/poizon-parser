@@ -11,6 +11,17 @@ type FocusTarget = () => HTMLElement | null | undefined
 const FOCUSABLE =
   'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'
 
+/**
+ * Фокусируемые элементы узла вместе с ним самим: элемент списка бывает и
+ * самой кнопкой (чип фильтра), а не только карточкой с кнопками внутри.
+ */
+function focusablesOf(element: Element): HTMLElement[] {
+  const inner = Array.from(element.querySelectorAll<HTMLElement>(FOCUSABLE))
+  return element instanceof HTMLElement && element.matches(FOCUSABLE)
+    ? [element, ...inner]
+    : inner
+}
+
 /** Последний переданный fallback — без пересоздания ref-колбэка. */
 function useLatest(fallback: FocusTarget) {
   const fallbackRef = useRef(fallback)
@@ -61,10 +72,11 @@ export function useFocusRescue<T extends HTMLElement>(
 }
 
 /**
- * То же для элементов списка (карточек), внутри которых может быть фокус:
- * «Убрать» в итогах, смена фильтров в результатах. Фокус переходит на то же
- * по счёту действие соседа — следующего, а если его нет, предыдущего; когда
- * соседей не осталось, — на fallback().
+ * То же для элементов списка (карточек, чипов, сообщений), на которых или
+ * внутри которых может быть фокус: «Убрать» в итогах, смена фильтров в
+ * результатах, снятый чип фильтра, скрытое сообщение. Фокус переходит на то
+ * же по счёту действие соседа — следующего, а если его нет, предыдущего;
+ * когда соседей не осталось, — на fallback().
  */
 export function useListFocusRescue<T extends HTMLElement>(
   fallback: FocusTarget,
@@ -80,9 +92,7 @@ export function useListFocusRescue<T extends HTMLElement>(
         // Соседей и место фокуса запоминаем сейчас: после коммита узла в DOM
         // уже нет. Сначала следующие элементы, затем предыдущие, ближние
         // раньше дальних.
-        const actionIndex = Array.from(
-          node.querySelectorAll(FOCUSABLE),
-        ).indexOf(focused)
+        const actionIndex = focusablesOf(node).indexOf(focused as HTMLElement)
         const siblings = Array.from(node.parentElement?.children ?? [])
         const index = siblings.indexOf(node)
         const neighbours = [
@@ -93,7 +103,7 @@ export function useListFocusRescue<T extends HTMLElement>(
           for (const neighbour of neighbours) {
             // Сосед мог уйти в том же коммите (например, «Очистить всё»).
             if (!neighbour.isConnected) continue
-            const actions = neighbour.querySelectorAll<HTMLElement>(FOCUSABLE)
+            const actions = focusablesOf(neighbour)
             const target = actions[actionIndex] ?? actions[0]
             if (target) return target
           }

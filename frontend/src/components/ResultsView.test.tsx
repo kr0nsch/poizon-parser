@@ -124,6 +124,47 @@ describe('ResultsView', () => {
     )
   })
 
+  it('moves focus to the title filter when «Сбросить» disappears', async () => {
+    const user = userEvent.setup()
+    render(<Harness onCreateReport={vi.fn()} />)
+    const titleFilter = screen.getByLabelText('Фильтр по названию')
+
+    await user.type(titleFilter, 'air')
+    screen.getByRole('button', { name: 'Сбросить' }).focus()
+    await user.keyboard('{Enter}')
+
+    expect(titleFilter).toHaveValue('')
+    expect(screen.queryByRole('button', { name: 'Сбросить' })).toBeNull()
+    // Кнопка исчезла от собственного нажатия, а фокус не упал на <body>.
+    await waitFor(() => expect(titleFilter).toHaveFocus())
+  })
+
+  it('keeps focus among the filter chips when one is removed', async () => {
+    const user = userEvent.setup()
+    render(<Harness onCreateReport={vi.fn()} />)
+    const titleFilter = screen.getByLabelText('Фильтр по названию')
+
+    await user.type(titleFilter, 'air')
+    await user.click(screen.getByLabelText('Точный перевод'))
+    await user.click(
+      screen.getByRole('button', { name: 'Убрать фильтр по названию: air' }),
+    )
+
+    // Чип уходит с анимацией; после него фокус — на соседнем чипе.
+    const exactChip = screen.getByRole('button', {
+      name: 'Убрать фильтр точного перевода',
+    })
+    await waitFor(() => expect(exactChip).toHaveFocus())
+    expect(
+      screen.queryByRole('button', { name: /Убрать фильтр по названию/ }),
+    ).toBeNull()
+
+    // Последний чип — фокус на поле фильтра по названию.
+    await user.click(exactChip)
+    await waitFor(() => expect(titleFilter).toHaveFocus())
+    expect(exactChip).not.toBeInTheDocument()
+  })
+
   it('reports exactly the filtered rows', async () => {
     const user = userEvent.setup()
     const onCreateReport = vi.fn()

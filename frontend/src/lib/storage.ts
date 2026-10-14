@@ -7,7 +7,8 @@ export interface StoredSearchForm {
   brand: string
   size: string
   gender: 'men' | 'women'
-  depth: string
+  /** Ровно варианты списка «Глубина поиска»; '0' — весь каталог. */
+  depth: '40' | '120' | '0'
   maxPrice: string
   pace: 'polite' | 'normal' | 'fast'
   kids: boolean
@@ -27,6 +28,7 @@ export const DEFAULT_SEARCH_FORM: StoredSearchForm = {
 
 const GENDERS: readonly StoredSearchForm['gender'][] = ['men', 'women']
 const PACES: readonly StoredSearchForm['pace'][] = ['polite', 'normal', 'fast']
+const DEPTHS: readonly StoredSearchForm['depth'][] = ['40', '120', '0']
 
 function oneOf<T extends string>(
   value: unknown,
@@ -45,10 +47,14 @@ function text(value: unknown, fallback: string): string {
   return fallback
 }
 
-function digits(value: unknown, fallback: string): string {
-  const raw = text(value, fallback).trim()
-  // Мусор в глубине превращался в 0, а это «весь каталог» — долгий поиск.
-  return /^\d+$/.test(raw) ? raw : fallback
+function depth(
+  value: unknown,
+  fallback: StoredSearchForm['depth'],
+): StoredSearchForm['depth'] {
+  // Только то, что умеет показать список. Иначе он молча показал бы первый
+  // вариант («40 моделей»), а в поиск ушло бы другое число — например, '00'
+  // превращался в 0, «весь каталог», без предупреждения о долгом поиске.
+  return oneOf(text(value, fallback).trim(), DEPTHS, fallback)
 }
 
 function price(value: unknown, fallback: string): string {
@@ -79,7 +85,7 @@ export function normalizeSearchForm(value: unknown): StoredSearchForm {
     brand: text(saved.brand, defaults.brand),
     size: text(saved.size, defaults.size),
     gender: oneOf(saved.gender, GENDERS, defaults.gender),
-    depth: digits(saved.depth, defaults.depth),
+    depth: depth(saved.depth, defaults.depth),
     maxPrice: price(saved.maxPrice, defaults.maxPrice),
     pace: oneOf(saved.pace, PACES, defaults.pace),
     kids: flag(saved.kids, defaults.kids),
@@ -119,6 +125,12 @@ export function resetSavedSettings(): void {
   }
 }
 
+/**
+ * Сохранённая тема, а без неё (или при чужом значении, или без доступа к
+ * хранилищу) — тема системы. То же правило повторяет встроенный скрипт в
+ * index.html, который красит страницу до загрузки React: меняйте их вместе,
+ * иначе переключатель разойдётся с видимой темой.
+ */
 export function getInitialTheme(): Theme {
   try {
     const saved = localStorage.getItem(THEME_STORAGE_KEY)

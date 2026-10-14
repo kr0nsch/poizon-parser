@@ -22,7 +22,7 @@ import {
 } from '../api'
 import { downloadText, rowsToCsv } from '../lib/download'
 import { deliveryDays, poizonSizeLabel, slugify } from '../lib/format'
-import { useListFocusRescue } from '../lib/utils'
+import { useFocusRescue, useListFocusRescue } from '../lib/utils'
 import { EmptyState } from './EmptyState'
 import { ProductCard } from './ProductCard'
 import { Button, Checkbox, Field, Select, Switch } from './ui'
@@ -94,6 +94,13 @@ export function ResultsView({
   const rescueCardFocus = useListFocusRescue<HTMLDivElement>(
     () => headingRef.current,
   )
+  // «Сбросить» и чипы фильтров исчезают от собственного нажатия. Фокус с
+  // чипа уходит на соседний чип, а без них, как и со «Сбросить», — на поле
+  // фильтра по названию: иначе браузер сбросил бы его на <body>.
+  const titleFilterRef = useRef<HTMLInputElement>(null)
+  const filtersFallback = () => titleFilterRef.current ?? headingRef.current
+  const rescueResetFocus = useFocusRescue<HTMLButtonElement>(filtersFallback)
+  const rescueChipFocus = useListFocusRescue<HTMLButtonElement>(filtersFallback)
 
   function update(patch: Partial<ResultsFilters>) {
     onFiltersChange((current) => ({ ...current, ...patch }))
@@ -277,6 +284,7 @@ export function ResultsView({
 
       <div className="filters-bar">
         <Field
+          ref={titleFilterRef}
           aria-label="Фильтр по названию"
           label={<span className="ui-sr-only">Фильтр по названию</span>}
           type="search"
@@ -304,7 +312,12 @@ export function ResultsView({
           onChange={(event) => update({ fastOnly: event.target.checked })}
         />
         {filtersActive ? (
-          <Button size="sm" variant="quiet" onClick={resetFilters}>
+          <Button
+            ref={rescueResetFocus}
+            size="sm"
+            variant="quiet"
+            onClick={resetFilters}
+          >
             <FilterX size={14} aria-hidden="true" />
             Сбросить
           </Button>
@@ -335,6 +348,7 @@ export function ResultsView({
               {text ? (
                 <motion.button
                   key="text-filter"
+                  ref={rescueChipFocus}
                   className="filter-chip"
                   type="button"
                   layout
@@ -350,6 +364,7 @@ export function ResultsView({
               {maxPrice ? (
                 <motion.button
                   key="price-filter"
+                  ref={rescueChipFocus}
                   className="filter-chip"
                   type="button"
                   layout
@@ -365,6 +380,7 @@ export function ResultsView({
               {exactOnly ? (
                 <motion.button
                   key="exact-filter"
+                  ref={rescueChipFocus}
                   className="filter-chip"
                   type="button"
                   layout
@@ -380,6 +396,7 @@ export function ResultsView({
               {fastOnly ? (
                 <motion.button
                   key="fast-filter"
+                  ref={rescueChipFocus}
                   className="filter-chip"
                   type="button"
                   layout
